@@ -18,6 +18,11 @@
 
   const OAUTH_SCOPES = "chat:read chat:edit";
   const STORAGE_KEY = "twitch-multiview.channels";
+  const LAYOUT_KEY_PREFIX = "twitch-multiview.layout.";
+
+  const DEFAULT_CHAT_WIDTH = 300;   // px, panel de chat cuando el video y el chat están lado a lado
+  const DEFAULT_CHAT_HEIGHT = 240;  // px, panel de chat cuando están apilados (pantallas angostas)
+  const NARROW_BREAKPOINT = 700;    // px
 
   // Dominio actual, exigido por Twitch como parámetro "parent" en los
   // embeds. Si la página corriera desde un archivo local (file://) o sin
@@ -27,8 +32,12 @@
   /* =====================================================================
      ESTADO
      ===================================================================== */
-  // channels: [{ name: "algunusuario", chatOpen: true|false }]
+  // channels: [{ name, chatOpen, chatWidth, chatHeightMobile }]
   let channels = loadChannels();
+
+  // Preferencias de layout — se guardan por resolución de pantalla, así
+  // que cada monitor (ej. 1080p vs 1440p) recuerda su propio acomodo.
+  let layoutPrefs = loadLayoutPrefs();
 
   // Estado de autenticación — SOLO EN MEMORIA, nunca en localStorage.
   let authToken = null;
@@ -37,7 +46,7 @@
   let ircConnected = false;
 
   /* =====================================================================
-     PERSISTENCIA (solo lista de canales, nunca el token)
+     PERSISTENCIA — canales (nunca el token)
      ===================================================================== */
   function loadChannels(){
     try{
@@ -47,7 +56,12 @@
       if(!Array.isArray(parsed)) return [];
       return parsed
         .filter(c => c && typeof c.name === "string")
-        .map(c => ({ name: c.name.toLowerCase(), chatOpen: !!c.chatOpen }));
+        .map(c => ({
+          name: c.name.toLowerCase(),
+          chatOpen: !!c.chatOpen,
+          chatWidth: typeof c.chatWidth === "number" ? c.chatWidth : null,
+          chatHeightMobile: typeof c.chatHeightMobile === "number" ? c.chatHeightMobile : null
+        }));
     }catch(e){
       console.warn("No se pudo leer la lista de canales guardada:", e);
       return [];
@@ -59,6 +73,50 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(channels));
     }catch(e){
       console.warn("No se pudo guardar la lista de canales:", e);
+    }
+  }
+
+  /* =====================================================================
+     PERSISTENCIA — layout (por resolución de pantalla)
+     ===================================================================== */
+  function getScreenKey(){
+    return (window.screen && window.screen.width && window.screen.height)
+      ? `${window.screen.width}x${window.screen.height}`
+      : "default";
+  }
+
+  function loadLayoutPrefs(){
+    const fallback = {
+      colsOverride: null,
+      colFr: null,
+      rowFr: null,
+      dimsKey: null,
+      chatWidth: DEFAULT_CHAT_WIDTH,
+      chatHeightMobile: DEFAULT_CHAT_HEIGHT
+    };
+    try{
+      const raw = localStorage.getItem(LAYOUT_KEY_PREFIX + getScreenKey());
+      if(!raw) return fallback;
+      const parsed = JSON.parse(raw);
+      return {
+        colsOverride: (typeof parsed.colsOverride === "number") ? parsed.colsOverride : null,
+        colFr: Array.isArray(parsed.colFr) ? parsed.colFr : null,
+        rowFr: Array.isArray(parsed.rowFr) ? parsed.rowFr : null,
+        dimsKey: parsed.dimsKey || null,
+        chatWidth: typeof parsed.chatWidth === "number" ? parsed.chatWidth : DEFAULT_CHAT_WIDTH,
+        chatHeightMobile: typeof parsed.chatHeightMobile === "number" ? parsed.chatHeightMobile : DEFAULT_CHAT_HEIGHT
+      };
+    }catch(e){
+      console.warn("No se pudo leer las preferencias de layout:", e);
+      return fallback;
+    }
+  }
+
+  function saveLayoutPrefs(){
+    try{
+      localStorage.setItem(LAYOUT_KEY_PREFIX + getScreenKey(), JSON.stringify(layoutPrefs));
+    }catch(e){
+      console.warn("No se pudo guardar el layout:", e);
     }
   }
 
@@ -77,6 +135,10 @@
   const logoutBtn = document.getElementById("logout-btn");
   const authWarning = document.getElementById("auth-warning");
 
+  const colsSelect = document.getElementById("cols-select");
+  const resetLayoutBtn = document.getElementById("reset-layout-btn");
+  const dragOverlay = document.getElementById("drag-overlay");
+
   /* =====================================================================
      VALIDACIÓN DE NOMBRES DE CANAL
      ===================================================================== */
@@ -87,10 +149,159 @@
   }
 
   /* =====================================================================
+     OVERLAY DE ARRASTRE
+     (evita que los iframes de Twitch "roben" los eventos del mouse
+     mientras se está redimensionando algo)
+     ===================================================================== */
+  function beginDrag(cursor){
+    if(dragOverlay){
+      dragOverlay.style.cursor = cursor;
+      dragOverlay.classList.add("active");
+    }
+  }
+  function endDrag(){
+    if(dragOverlay) dragOverlay.classList.remove("active");
+  }
+
+  /* =====================================================================
      RENDER: GRID / LAYOUT
      ===================================================================== */
+  function isNarrow(){
+    return window.innerWidth < NARROW_BREAKPOINT;
+  }
+
+  function getGridDims(n){
+    if(n === 0) return { cols: 0, rows: 0, narrow: false };
+    if(isNarrow()) return { cols: 1, rows: n, narrow: true };
+    let cols = layoutPrefs.colsOverride || Math.ceil(Math.sqrt(n));
+    cols = Math.max(1, Math.min(cols, n));
+    const rows = Math.ceil(n / cols);
+    return { cols, rows, narrow: false };
+  }
+
+  function ensureFrArrays(dims){
+    const key = dims.cols + "x" + dims.rows;
+    const colOk = Array.isArray(layoutPrefs.colFr) && layoutPrefs.colFr.length === dims.cols;
+    const rowOk = Array.isArray(layoutPrefs.rowFr) && layoutPrefs.rowFr.length === dims.rows;
+    if(layoutPrefs.dimsKey !== key || !colOk || !rowOk){
+      layoutPrefs.colFr = new Array(dims.cols).fill(1);
+      layoutPrefs.rowFr = new Array(dims.rows).fill(1);
+      layoutPrefs.dimsKey = key;
+    }
+  }
+
+  function applyGridTemplate(dims){
+    grid.style.gridTemplateColumns = layoutPrefs.colFr.map(f => f.toFixed(4) + "fr").join(" ");
+    grid.style.gridTemplateRows = layoutPrefs.rowFr.map(f => f.toFixed(4) + "fr").join(" ");
+  }
+
+  function clearGridHandles(){
+    grid.querySelectorAll(".grid-resize-col, .grid-resize-row").forEach(h => h.remove());
+  }
+
+  function positionGridHandles(dims){
+    clearGridHandles();
+    if(dims.narrow) return;
+
+    const tiles = Array.from(grid.children).filter(el => el.classList.contains("tile"));
+    if(tiles.length === 0) return;
+    const gridRect = grid.getBoundingClientRect();
+
+    // divisores verticales entre columnas (basados en la primera fila)
+    for(let c = 0; c < dims.cols - 1; c++){
+      if(c + 1 >= tiles.length) break;
+      const rect = tiles[c].getBoundingClientRect();
+      const handle = document.createElement("div");
+      handle.className = "grid-resize-col";
+      handle.style.left = (rect.right - gridRect.left - 5) + "px";
+      handle.addEventListener("mousedown", (e) => startColResize(e, c, dims));
+      grid.appendChild(handle);
+    }
+
+    // divisores horizontales entre filas (basados en la primera columna)
+    for(let r = 0; r < dims.rows - 1; r++){
+      const idx = r * dims.cols;
+      const nextIdx = (r + 1) * dims.cols;
+      if(nextIdx >= tiles.length) break;
+      const rect = tiles[idx].getBoundingClientRect();
+      const handle = document.createElement("div");
+      handle.className = "grid-resize-row";
+      handle.style.top = (rect.bottom - gridRect.top - 5) + "px";
+      handle.addEventListener("mousedown", (e) => startRowResize(e, r, dims));
+      grid.appendChild(handle);
+    }
+  }
+
+  function startColResize(e, colIndex, dims){
+    e.preventDefault();
+    const gridRect = grid.getBoundingClientRect();
+    const startX = e.clientX;
+    const startFr = layoutPrefs.colFr.slice();
+    const totalFr = startFr.reduce((a, b) => a + b, 0);
+    const minFr = totalFr / (startFr.length * 4);
+    const gridWidth = gridRect.width;
+
+    beginDrag("col-resize");
+
+    function onMove(ev){
+      const dx = ev.clientX - startX;
+      const frDelta = (dx / gridWidth) * totalFr;
+      let a = startFr[colIndex] + frDelta;
+      let b = startFr[colIndex + 1] - frDelta;
+      if(a < minFr){ b -= (minFr - a); a = minFr; }
+      if(b < minFr){ a -= (minFr - b); b = minFr; }
+      layoutPrefs.colFr[colIndex] = a;
+      layoutPrefs.colFr[colIndex + 1] = b;
+      applyGridTemplate(dims);
+      positionGridHandles(dims);
+    }
+    function onUp(){
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      endDrag();
+      saveLayoutPrefs();
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  function startRowResize(e, rowIndex, dims){
+    e.preventDefault();
+    const gridRect = grid.getBoundingClientRect();
+    const startY = e.clientY;
+    const startFr = layoutPrefs.rowFr.slice();
+    const totalFr = startFr.reduce((a, b) => a + b, 0);
+    const minFr = totalFr / (startFr.length * 4);
+    const gridHeight = gridRect.height;
+
+    beginDrag("row-resize");
+
+    function onMove(ev){
+      const dy = ev.clientY - startY;
+      const frDelta = (dy / gridHeight) * totalFr;
+      let a = startFr[rowIndex] + frDelta;
+      let b = startFr[rowIndex + 1] - frDelta;
+      if(a < minFr){ b -= (minFr - a); a = minFr; }
+      if(b < minFr){ a -= (minFr - b); b = minFr; }
+      layoutPrefs.rowFr[rowIndex] = a;
+      layoutPrefs.rowFr[rowIndex + 1] = b;
+      applyGridTemplate(dims);
+      positionGridHandles(dims);
+    }
+    function onUp(){
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      endDrag();
+      saveLayoutPrefs();
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
   function updateGridLayout(){
     const n = channels.length;
+    clearGridHandles();
+
     if(n === 0){
       grid.style.display = "none";
       emptyState.style.display = "block";
@@ -99,20 +310,54 @@
     grid.style.display = "grid";
     emptyState.style.display = "none";
 
-    const narrow = window.innerWidth < 700;
-    let cols;
-    if(narrow){
-      cols = 1;
-    }else{
-      cols = Math.ceil(Math.sqrt(n));
-    }
-    const rows = Math.ceil(n / cols);
+    const dims = getGridDims(n);
 
-    grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-    grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    if(dims.narrow){
+      grid.style.gridTemplateColumns = "1fr";
+      grid.style.gridTemplateRows = `repeat(${n}, minmax(240px, 1fr))`;
+      return;
+    }
+
+    ensureFrArrays(dims);
+    applyGridTemplate(dims);
+    requestAnimationFrame(() => positionGridHandles(dims));
   }
 
   window.addEventListener("resize", updateGridLayout);
+
+  /* =====================================================================
+     CONTROLES DE LAYOUT (columnas manuales + reset)
+     ===================================================================== */
+  function syncColsSelect(){
+    colsSelect.value = layoutPrefs.colsOverride ? String(layoutPrefs.colsOverride) : "auto";
+  }
+
+  colsSelect.addEventListener("change", () => {
+    const v = colsSelect.value;
+    layoutPrefs.colsOverride = (v === "auto") ? null : parseInt(v, 10);
+    // los tamaños guardados ya no aplican a la nueva cantidad de columnas
+    layoutPrefs.colFr = null;
+    layoutPrefs.rowFr = null;
+    layoutPrefs.dimsKey = null;
+    saveLayoutPrefs();
+    updateGridLayout();
+  });
+
+  resetLayoutBtn.addEventListener("click", () => {
+    layoutPrefs = {
+      colsOverride: null,
+      colFr: null,
+      rowFr: null,
+      dimsKey: null,
+      chatWidth: DEFAULT_CHAT_WIDTH,
+      chatHeightMobile: DEFAULT_CHAT_HEIGHT
+    };
+    channels.forEach(c => { c.chatWidth = null; c.chatHeightMobile = null; });
+    syncColsSelect();
+    saveLayoutPrefs();
+    saveChannels();
+    renderChannels();
+  });
 
   /* =====================================================================
      RENDER: TILES
@@ -132,10 +377,40 @@
     const tile = document.createElement("div");
     tile.className = "tile";
     tile.dataset.channel = ch.name;
+    tile.draggable = true;
+
+    /* ---- reordenar canales arrastrando ---- */
+    tile.addEventListener("dragstart", (e) => {
+      if(!e.target.closest(".drag-handle")){
+        e.preventDefault();
+        return;
+      }
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", ch.name);
+      requestAnimationFrame(() => tile.classList.add("dragging"));
+    });
+    tile.addEventListener("dragend", () => tile.classList.remove("dragging"));
+    tile.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      tile.classList.add("drag-over");
+    });
+    tile.addEventListener("dragleave", () => tile.classList.remove("drag-over"));
+    tile.addEventListener("drop", (e) => {
+      e.preventDefault();
+      tile.classList.remove("drag-over");
+      const draggedName = e.dataTransfer.getData("text/plain");
+      if(draggedName && draggedName !== ch.name) reorderChannels(draggedName, ch.name);
+    });
 
     // header
     const header = document.createElement("div");
     header.className = "tile-header";
+
+    const dragHandle = document.createElement("span");
+    dragHandle.className = "icon-btn drag-handle";
+    dragHandle.title = "Arrastrar para reordenar";
+    dragHandle.textContent = "⠿";
 
     const nameEl = document.createElement("div");
     nameEl.className = "channel-name";
@@ -146,12 +421,6 @@
     chatToggle.className = "icon-btn" + (ch.chatOpen ? " active" : "");
     chatToggle.title = "Mostrar / ocultar chat";
     chatToggle.textContent = "💬";
-    chatToggle.addEventListener("click", () => {
-      ch.chatOpen = !ch.chatOpen;
-      saveChannels();
-      chatToggle.classList.toggle("active", ch.chatOpen);
-      chatPanel.classList.toggle("hidden", !ch.chatOpen);
-    });
 
     const removeBtn = document.createElement("button");
     removeBtn.className = "icon-btn remove";
@@ -159,6 +428,7 @@
     removeBtn.textContent = "×";
     removeBtn.addEventListener("click", () => removeChannel(ch.name));
 
+    header.appendChild(dragHandle);
     header.appendChild(nameEl);
     header.appendChild(chatToggle);
     header.appendChild(removeBtn);
@@ -175,8 +445,14 @@
     videoFrame.setAttribute("allow", "autoplay; fullscreen");
     videoWrap.appendChild(videoFrame);
 
+    // divisor arrastrable entre video y chat
+    const resizer = document.createElement("div");
+    resizer.className = "tile-resizer";
+    if(!ch.chatOpen) resizer.hidden = true;
+
     const chatPanel = document.createElement("div");
     chatPanel.className = "chat-panel" + (ch.chatOpen ? "" : " hidden");
+    applyChatSize(ch, chatPanel);
 
     const chatFrame = document.createElement("iframe");
     chatFrame.src = `https://www.twitch.tv/embed/${encodeURIComponent(ch.name)}/chat?parent=${encodeURIComponent(PARENT)}&darkpopout`;
@@ -205,17 +481,84 @@
 
     chatPanel.appendChild(sendForm);
 
+    chatToggle.addEventListener("click", () => {
+      ch.chatOpen = !ch.chatOpen;
+      saveChannels();
+      chatToggle.classList.toggle("active", ch.chatOpen);
+      chatPanel.classList.toggle("hidden", !ch.chatOpen);
+      resizer.hidden = !ch.chatOpen;
+    });
+
+    attachChatResizer(resizer, ch, chatPanel);
+
     body.appendChild(videoWrap);
+    body.appendChild(resizer);
     body.appendChild(chatPanel);
 
     tile.appendChild(header);
     tile.appendChild(body);
 
-    // guardar refs para poder actualizar estado de auth luego
-    tile._sendInput = sendInput;
-    tile._sendBtn = sendBtn;
-
     return tile;
+  }
+
+  function applyChatSize(ch, chatPanel){
+    if(isNarrow()){
+      const h = ch.chatHeightMobile || layoutPrefs.chatHeightMobile || DEFAULT_CHAT_HEIGHT;
+      chatPanel.style.height = h + "px";
+      chatPanel.style.width = "";
+    }else{
+      const w = ch.chatWidth || layoutPrefs.chatWidth || DEFAULT_CHAT_WIDTH;
+      chatPanel.style.width = w + "px";
+      chatPanel.style.height = "";
+    }
+  }
+
+  /* ---- arrastrar para cambiar el tamaño del chat vs. el video ---- */
+  function attachChatResizer(resizerEl, ch, chatPanel){
+    resizerEl.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      const narrow = isNarrow();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startRect = chatPanel.getBoundingClientRect();
+      const startWidth = startRect.width;
+      const startHeight = startRect.height;
+
+      resizerEl.classList.add("dragging");
+      beginDrag(narrow ? "row-resize" : "col-resize");
+
+      function onMove(ev){
+        if(narrow){
+          const dy = startY - ev.clientY; // arrastrar hacia arriba agranda el chat
+          let h = startHeight + dy;
+          h = Math.max(120, Math.min(h, Math.round(window.innerHeight * 0.7)));
+          chatPanel.style.height = h + "px";
+          ch.chatHeightMobile = h;
+        }else{
+          const dx = startX - ev.clientX; // arrastrar hacia la izquierda agranda el chat
+          let w = startWidth + dx;
+          w = Math.max(180, Math.min(w, 700));
+          chatPanel.style.width = w + "px";
+          ch.chatWidth = w;
+        }
+      }
+      function onUp(){
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        resizerEl.classList.remove("dragging");
+        endDrag();
+        // recordar el último tamaño usado como default para canales nuevos
+        if(narrow){
+          layoutPrefs.chatHeightMobile = ch.chatHeightMobile;
+        }else{
+          layoutPrefs.chatWidth = ch.chatWidth;
+        }
+        saveLayoutPrefs();
+        saveChannels();
+      }
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    });
   }
 
   function updateAllChatInputsState(){
@@ -229,7 +572,7 @@
   }
 
   /* =====================================================================
-     AGREGAR / QUITAR CANALES
+     AGREGAR / QUITAR / REORDENAR CANALES
      ===================================================================== */
   addForm.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -249,7 +592,7 @@
       return;
     }
 
-    channels.push({ name, chatOpen: false });
+    channels.push({ name, chatOpen: false, chatWidth: null, chatHeightMobile: null });
     saveChannels();
     renderChannels();
     channelInput.value = "";
@@ -262,6 +605,16 @@
     saveChannels();
     renderChannels();
     if(ircConnected) ircPart(name);
+  }
+
+  function reorderChannels(draggedName, targetName){
+    const fromIdx = channels.findIndex(c => c.name === draggedName);
+    const toIdx = channels.findIndex(c => c.name === targetName);
+    if(fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return;
+    const [moved] = channels.splice(fromIdx, 1);
+    channels.splice(toIdx, 0, moved);
+    saveChannels();
+    renderChannels();
   }
 
   /* =====================================================================
@@ -444,6 +797,7 @@
     checkConfigWarning();
     handleOAuthRedirect();
     refreshAuthUI();
+    syncColsSelect();
     renderChannels();
   }
 

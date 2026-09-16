@@ -8,6 +8,8 @@
 </head>
 <body>
 
+  <div id="drag-overlay"></div>
+
   <header id="topbar">
     <h1>Multivista <span>Twitch</span></h1>
 
@@ -16,6 +18,20 @@
       <button type="submit" class="btn btn-accent">Agregar canal</button>
     </form>
     <div id="add-error"></div>
+
+    <div id="layout-controls">
+      <label for="cols-select">Columnas</label>
+      <select id="cols-select">
+        <option value="auto">Auto</option>
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="5">5</option>
+        <option value="6">6</option>
+      </select>
+      <button type="button" id="reset-layout-btn" class="btn" title="Restablecer columnas, tamaños y orden">↺ Restablecer diseño</button>
+    </div>
 
     <div id="auth-area">
       <div id="auth-warning" hidden></div>
