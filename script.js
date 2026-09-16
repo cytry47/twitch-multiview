@@ -75,6 +75,13 @@
   let unifiedChatSendInputEl = null;
   let unifiedChatSendBtnEl = null;
 
+  // Referencias a los elementos de chat de cada tile YA existente en el
+  // DOM (se llenan en buildTile). Permiten actualizar solo lo relacionado
+  // al chat (mostrar/ocultar panel, estado del botón 💬) sin reconstruir
+  // el grid entero — y sin recargar los iframes de video — al activar o
+  // desactivar el chat compartido.
+  let tileRegistry = [];
+
   const CHANNEL_PALETTE = ["#f2a93b","#5aa9e6","#7ed6a5","#e07be0","#ff8a65","#8d9eff","#ffd54f","#4dd0e1"];
   function channelColor(name){
     let hash = 0;
@@ -420,6 +427,24 @@
     }
   }
 
+  // Actualiza el botón 💬 y el panel de chat propio de cada tile YA
+  // existente en el DOM, sin reconstruir nada — así activar/desactivar
+  // el chat compartido no recarga los iframes de video ni los de chat.
+  function updateTileChatVisibility(){
+    tileRegistry.forEach(ref => {
+      const ch = channels.find(c => c.name === ref.name);
+      if(!ch) return;
+      const chatToggleIsActive = sharedChatMode ? (sharedChatActive === ch.name) : ch.chatOpen;
+      ref.chatToggle.classList.toggle("active", chatToggleIsActive);
+      ref.chatToggle.title = sharedChatMode
+        ? "Ver el chat de este canal en el panel compartido"
+        : "Mostrar / ocultar chat";
+      const showOwnChat = !sharedChatMode && ch.chatOpen;
+      ref.chatPanel.classList.toggle("hidden", !showOwnChat);
+      ref.resizer.hidden = !showOwnChat;
+    });
+  }
+
   /* ---- dropdown reutilizable con checkboxes (filtro de lectura / destino de envío) ---- */
   function closeDropdowns(){
     document.querySelectorAll(".chat-dropdown-menu").forEach(m => { m.hidden = true; });
@@ -738,7 +763,11 @@
       saveUnifiedChatMode();
       unifiedChatToggleBtn.classList.remove("active");
       if(!authToken) closeIrc();
-      renderChannels();
+      tile.remove();
+      unifiedChatMessagesEl = null;
+      unifiedChatSendInputEl = null;
+      unifiedChatSendBtnEl = null;
+      updateGridLayout();
     });
 
     header.appendChild(nameEl);
@@ -806,7 +835,8 @@
     sharedChatEl.hidden = !sharedChatMode;
     sharedChatResizerEl.hidden = !sharedChatMode;
     applySharedChatWidth();
-    renderChannels();
+    updateTileChatVisibility();
+    if(sharedChatMode) renderSharedChatPanel();
   }
 
   sharedChatToggleBtn.addEventListener("click", () => {
@@ -819,13 +849,24 @@
     unifiedChatMode = !unifiedChatMode;
     saveUnifiedChatMode();
     unifiedChatToggleBtn.classList.toggle("active", unifiedChatMode);
+
     if(unifiedChatMode){
       channels.forEach(c => { unifiedVisibleChannels.add(c.name); unifiedSendTargets.add(c.name); });
       connectIrc();
-    }else if(!authToken){
-      closeIrc();
+      if(channels.length > 0 && !grid.querySelector(".unified-chat-tile")){
+        grid.appendChild(buildUnifiedChatTile());
+        updateGridLayout();
+        updateAllChatInputsState();
+      }
+    }else{
+      if(!authToken) closeIrc();
+      const existing = grid.querySelector(".unified-chat-tile");
+      if(existing) existing.remove();
+      unifiedChatMessagesEl = null;
+      unifiedChatSendInputEl = null;
+      unifiedChatSendBtnEl = null;
+      updateGridLayout();
     }
-    renderChannels();
   });
 
   sharedChatResizerEl.addEventListener("mousedown", (e) => {
@@ -908,6 +949,7 @@
      ===================================================================== */
   function renderChannels(){
     grid.innerHTML = "";
+    tileRegistry = [];
     unifiedChatMessagesEl = null;
     unifiedChatSendInputEl = null;
     unifiedChatSendBtnEl = null;
@@ -1064,6 +1106,8 @@
 
     tile.appendChild(header);
     tile.appendChild(body);
+
+    tileRegistry.push({ name: ch.name, chatToggle, chatPanel, resizer });
 
     return tile;
   }
