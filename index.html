@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Multivista de Twitch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -32,6 +35,7 @@
       </select>
       <button type="button" id="reset-layout-btn" class="btn" title="Restablecer columnas, tamaños y orden">↺ Restablecer diseño</button>
       <button type="button" id="shared-chat-toggle" class="btn" title="Ver un solo chat compartido en vez de un chat por canal">💬 Chat compartido</button>
+      <button type="button" id="unified-chat-toggle" class="btn" title="Agregar una tile en el grid con los mensajes de todos los canales mezclados">🧩 Chat unificado</button>
     </div>
 
     <div id="auth-area">
@@ -54,8 +58,9 @@
 
     <div id="shared-chat-resizer" class="tile-resizer" hidden></div>
     <div id="shared-chat" hidden>
-      <div id="shared-chat-tabs"></div>
+      <div id="shared-chat-select" class="chat-dropdown-row"></div>
       <div id="shared-chat-frame-wrap"></div>
+      <div id="shared-chat-targets" class="chat-dropdown-row"></div>
       <form id="shared-chat-send-form" class="chat-send-form">
         <input type="text" id="shared-chat-input" maxlength="500" placeholder="Enviar mensaje…">
         <button type="submit">➤</button>

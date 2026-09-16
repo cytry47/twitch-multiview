@@ -21,6 +21,7 @@
   const LAYOUT_KEY_PREFIX = "twitch-multiview.layout.";
   const SHARED_MODE_KEY = "twitch-multiview.sharedChatMode";
   const SHARED_ACTIVE_KEY = "twitch-multiview.sharedChatActive";
+  const UNIFIED_MODE_KEY = "twitch-multiview.unifiedChatMode";
   const DEFAULT_SHARED_CHAT_WIDTH = 340;
   const DEFAULT_SHARED_CHAT_HEIGHT_MOBILE = 260;
 
@@ -43,11 +44,47 @@
   // que cada monitor (ej. 1080p vs 1440p) recuerda su propio acomodo.
   let layoutPrefs = loadLayoutPrefs();
 
-  // Chat compartido: un único panel de chat con pestañas por canal,
-  // en vez de un chat por cada tile.
+  // Chat compartido: se ve el chat NATIVO de Twitch (iframe) de un canal
+  // a la vez —así se ven bien los emotes, badges y menciones—, y se
+  // cambia de canal con el selector. El envío sí puede ir a varios
+  // canales a la vez (eso no depende del iframe, va por IRC).
   let sharedChatMode = loadSharedChatMode();
   let sharedChatActive = null;
   try{ sharedChatActive = localStorage.getItem(SHARED_ACTIVE_KEY) || null; }catch(e){ sharedChatActive = null; }
+
+  // A cuáles canales se les manda el mensaje al escribir en el chat
+  // compartido. Vive solo en memoria y arranca con todos los canales.
+  let sendTargets = new Set(channels.map(c => c.name));
+
+  // Chat unificado: una tile OPCIONAL dentro del grid (independiente del
+  // panel de chat compartido de arriba) que muestra un único feed con los
+  // mensajes de todos los canales mezclados, leídos por IRC. Convive con
+  // el chat compartido — ambos pueden estar activos a la vez.
+  let unifiedChatMode = loadUnifiedChatMode();
+
+  // Qué canales se muestran en el feed unificado (filtro de lectura) y a
+  // cuáles se les manda el mensaje al escribir ahí (destino de envío).
+  // Ambos viven solo en memoria y son independientes de "sendTargets".
+  let unifiedVisibleChannels = new Set(channels.map(c => c.name));
+  let unifiedSendTargets = new Set(channels.map(c => c.name));
+
+  // Mensajes recibidos por IRC, mezclados de todos los canales.
+  let chatMessages = [];
+  let msgIdCounter = 0;
+  const MAX_MESSAGES = 300;
+
+  // Referencias a los elementos vivos de la tile de chat unificado (se
+  // reasignan cada vez que se reconstruye el grid en renderChannels()).
+  let unifiedChatMessagesEl = null;
+  let unifiedChatSendInputEl = null;
+  let unifiedChatSendBtnEl = null;
+
+  const CHANNEL_PALETTE = ["#f2a93b","#5aa9e6","#7ed6a5","#e07be0","#ff8a65","#8d9eff","#ffd54f","#4dd0e1"];
+  function channelColor(name){
+    let hash = 0;
+    for(let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+    return CHANNEL_PALETTE[hash % CHANNEL_PALETTE.length];
+  }
 
   // Estado de autenticación — SOLO EN MEMORIA, nunca en localStorage.
   let authToken = null;
@@ -148,6 +185,14 @@
       else localStorage.removeItem(SHARED_ACTIVE_KEY);
     }catch(e){ /* noop */ }
   }
+  function loadUnifiedChatMode(){
+    try{ return localStorage.getItem(UNIFIED_MODE_KEY) === "1"; }
+    catch(e){ return false; }
+  }
+  function saveUnifiedChatMode(){
+    try{ localStorage.setItem(UNIFIED_MODE_KEY, unifiedChatMode ? "1" : "0"); }
+    catch(e){ /* noop */ }
+  }
 
   /* =====================================================================
      DOM refs
@@ -169,10 +214,12 @@
   const dragOverlay = document.getElementById("drag-overlay");
 
   const sharedChatToggleBtn = document.getElementById("shared-chat-toggle");
+  const unifiedChatToggleBtn = document.getElementById("unified-chat-toggle");
   const sharedChatEl = document.getElementById("shared-chat");
   const sharedChatResizerEl = document.getElementById("shared-chat-resizer");
-  const sharedChatTabsEl = document.getElementById("shared-chat-tabs");
+  const sharedChatSelectEl = document.getElementById("shared-chat-select");
   const sharedChatFrameWrapEl = document.getElementById("shared-chat-frame-wrap");
+  const sharedChatTargetsEl = document.getElementById("shared-chat-targets");
   const sharedChatSendForm = document.getElementById("shared-chat-send-form");
   const sharedChatInput = document.getElementById("shared-chat-input");
 
@@ -336,10 +383,12 @@
   }
 
   function updateGridLayout(){
-    const n = channels.length;
+    // la tile de chat unificado cuenta como una tile más para el cálculo
+    // de columnas/filas del grid, igual que un canal cualquiera.
+    const n = channels.length + (unifiedChatMode && channels.length > 0 ? 1 : 0);
     clearGridHandles();
 
-    if(n === 0){
+    if(channels.length === 0){
       grid.style.display = "none";
       emptyState.style.display = "block";
       return;
@@ -378,50 +427,392 @@
     }
   }
 
-  function setSharedActiveChannel(name){
-    sharedChatActive = name;
-    saveSharedChatActive();
-    renderSharedChatTabs();
-    grid.querySelectorAll('[data-role="chat-toggle"]').forEach(b => {
-      b.classList.toggle("active", b.dataset.channel === name);
-    });
+  /* ---- dropdown reutilizable con checkboxes (filtro de lectura / destino de envío) ---- */
+  function closeDropdowns(){
+    document.querySelectorAll(".chat-dropdown-menu").forEach(m => { m.hidden = true; });
+    document.querySelectorAll(".chat-dropdown-btn").forEach(b => b.classList.remove("open"));
+  }
+  document.addEventListener("click", closeDropdowns);
+
+  function summaryLabel(selectedSet, total){
+    if(total === 0) return "—";
+    if(selectedSet.size === 0) return "Ninguno";
+    if(selectedSet.size === total) return "Todos";
+    if(selectedSet.size === 1) return [...selectedSet][0];
+    return selectedSet.size + " canales";
   }
 
-  function renderSharedChatTabs(){
-    sharedChatTabsEl.innerHTML = "";
+  function buildDropdown(containerEl, label, selectedSet, onChange){
+    containerEl.innerHTML = "";
+    if(channels.length === 0) return;
 
+    const wrap = document.createElement("div");
+    wrap.className = "chat-dropdown";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-dropdown-btn";
+
+    const btnLabel = document.createElement("span");
+    btnLabel.className = "dd-label";
+    btnLabel.textContent = label + ":";
+
+    const btnValue = document.createElement("span");
+    btnValue.className = "dd-value";
+    btnValue.textContent = summaryLabel(selectedSet, channels.length);
+
+    const caret = document.createElement("span");
+    caret.className = "dd-caret";
+    caret.textContent = "▾";
+
+    btn.appendChild(btnLabel);
+    btn.appendChild(btnValue);
+    btn.appendChild(caret);
+
+    const menu = document.createElement("div");
+    menu.className = "chat-dropdown-menu";
+    menu.hidden = true;
+    menu.addEventListener("click", e => e.stopPropagation());
+
+    function syncAllCheckbox(){
+      allCb.checked = selectedSet.size === channels.length;
+      allCb.indeterminate = selectedSet.size > 0 && selectedSet.size < channels.length;
+    }
+
+    const allRow = document.createElement("label");
+    allRow.className = "dropdown-item dropdown-item-all";
+    const allCb = document.createElement("input");
+    allCb.type = "checkbox";
+    allCb.addEventListener("change", () => {
+      if(allCb.checked) channels.forEach(c => selectedSet.add(c.name));
+      else selectedSet.clear();
+      menu.querySelectorAll("input[data-channel]").forEach(cb => {
+        cb.checked = selectedSet.has(cb.dataset.channel);
+      });
+      btnValue.textContent = summaryLabel(selectedSet, channels.length);
+      onChange();
+    });
+    allRow.appendChild(allCb);
+    allRow.appendChild(document.createTextNode("Todos"));
+    menu.appendChild(allRow);
+
+    channels.forEach(ch => {
+      const row = document.createElement("label");
+      row.className = "dropdown-item";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.dataset.channel = ch.name;
+      cb.checked = selectedSet.has(ch.name);
+      cb.addEventListener("change", () => {
+        if(cb.checked) selectedSet.add(ch.name);
+        else selectedSet.delete(ch.name);
+        syncAllCheckbox();
+        btnValue.textContent = summaryLabel(selectedSet, channels.length);
+        onChange();
+      });
+      const dot = document.createElement("span");
+      dot.className = "dd-dot";
+      dot.style.background = channelColor(ch.name);
+      row.appendChild(cb);
+      row.appendChild(dot);
+      row.appendChild(document.createTextNode(ch.name));
+      menu.appendChild(row);
+    });
+
+    syncAllCheckbox();
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = menu.hidden;
+      closeDropdowns();
+      if(willOpen){
+        menu.hidden = false;
+        btn.classList.add("open");
+      }
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    containerEl.appendChild(wrap);
+  }
+
+  /* ---- selector de un solo canal (cuál chat NATIVO se muestra) ---- */
+  function buildSingleSelectDropdown(containerEl, label, getActive, setActive, onChange){
+    containerEl.innerHTML = "";
+    if(channels.length === 0) return;
+
+    const wrap = document.createElement("div");
+    wrap.className = "chat-dropdown";
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-dropdown-btn";
+
+    const btnLabel = document.createElement("span");
+    btnLabel.className = "dd-label";
+    btnLabel.textContent = label + ":";
+
+    const btnValue = document.createElement("span");
+    btnValue.className = "dd-value";
+    btnValue.textContent = getActive() || "—";
+
+    const caret = document.createElement("span");
+    caret.className = "dd-caret";
+    caret.textContent = "▾";
+
+    btn.appendChild(btnLabel);
+    btn.appendChild(btnValue);
+    btn.appendChild(caret);
+
+    const menu = document.createElement("div");
+    menu.className = "chat-dropdown-menu";
+    menu.hidden = true;
+    menu.addEventListener("click", e => e.stopPropagation());
+
+    channels.forEach(ch => {
+      const row = document.createElement("label");
+      row.className = "dropdown-item";
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = "shared-chat-active-channel";
+      radio.checked = getActive() === ch.name;
+      radio.addEventListener("change", () => {
+        setActive(ch.name);
+        btnValue.textContent = ch.name;
+        closeDropdowns();
+        onChange();
+      });
+      const dot = document.createElement("span");
+      dot.className = "dd-dot";
+      dot.style.background = channelColor(ch.name);
+      row.appendChild(radio);
+      row.appendChild(dot);
+      row.appendChild(document.createTextNode(ch.name));
+      menu.appendChild(row);
+    });
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = menu.hidden;
+      closeDropdowns();
+      if(willOpen){
+        menu.hidden = false;
+        btn.classList.add("open");
+      }
+    });
+
+    wrap.appendChild(btn);
+    wrap.appendChild(menu);
+    containerEl.appendChild(wrap);
+  }
+
+  function renderChannelSelect(){
     if(channels.length === 0){
-      sharedChatFrameWrapEl.innerHTML = "";
+      sharedChatSelectEl.innerHTML = "";
+      return;
+    }
+    if(!sharedChatActive || !channels.some(c => c.name === sharedChatActive)){
+      sharedChatActive = channels[0].name;
+      saveSharedChatActive();
+    }
+    buildSingleSelectDropdown(
+      sharedChatSelectEl,
+      "Canal",
+      () => sharedChatActive,
+      (name) => {
+        sharedChatActive = name;
+        saveSharedChatActive();
+        grid.querySelectorAll('[data-role="chat-toggle"]').forEach(b => {
+          b.classList.toggle("active", b.dataset.channel === sharedChatActive);
+        });
+      },
+      renderSharedChatFrame
+    );
+  }
+
+  function renderSharedChatFrame(){
+    sharedChatFrameWrapEl.innerHTML = "";
+    if(channels.length === 0){
       const empty = document.createElement("div");
       empty.id = "shared-chat-empty";
       empty.textContent = "Agregá un canal para ver su chat acá.";
       sharedChatFrameWrapEl.appendChild(empty);
       return;
     }
-
-    if(!sharedChatActive || !channels.some(c => c.name === sharedChatActive)){
-      sharedChatActive = channels[0].name;
-      saveSharedChatActive();
-    }
-
-    channels.forEach(ch => {
-      const tab = document.createElement("button");
-      tab.type = "button";
-      tab.textContent = ch.name;
-      tab.className = (ch.name === sharedChatActive) ? "active" : "";
-      tab.addEventListener("click", () => setSharedActiveChannel(ch.name));
-      sharedChatTabsEl.appendChild(tab);
-    });
-
-    renderSharedChatFrame();
-  }
-
-  function renderSharedChatFrame(){
-    sharedChatFrameWrapEl.innerHTML = "";
     if(!sharedChatActive) return;
     const iframe = document.createElement("iframe");
     iframe.src = `https://www.twitch.tv/embed/${encodeURIComponent(sharedChatActive)}/chat?parent=${encodeURIComponent(PARENT)}&darkpopout`;
     sharedChatFrameWrapEl.appendChild(iframe);
+  }
+
+  function renderChatTargets(){
+    buildDropdown(sharedChatTargetsEl, "Enviar a", sendTargets, () => {
+      updateAllChatInputsState();
+    });
+  }
+
+  function renderSharedChatPanel(){
+    renderChannelSelect();
+    renderSharedChatFrame();
+    renderChatTargets();
+  }
+
+  /* =====================================================================
+     CHAT UNIFICADO (tile opcional dentro del grid)
+     ===================================================================== */
+  function isUnifiedFeedScrolledToBottom(){
+    if(!unifiedChatMessagesEl) return true;
+    const el = unifiedChatMessagesEl;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }
+  function scrollUnifiedFeedToBottom(){
+    if(unifiedChatMessagesEl) unifiedChatMessagesEl.scrollTop = unifiedChatMessagesEl.scrollHeight;
+  }
+
+  function buildUnifiedMessageEl(m){
+    const div = document.createElement("div");
+    div.className = "chat-msg";
+
+    const chanTag = document.createElement("span");
+    chanTag.className = "msg-channel";
+    chanTag.textContent = m.channel;
+    chanTag.style.background = channelColor(m.channel);
+
+    const userSpan = document.createElement("span");
+    userSpan.className = "msg-user";
+    userSpan.textContent = m.user;
+    if(m.color) userSpan.style.color = m.color;
+
+    const textSpan = document.createElement("span");
+    textSpan.className = "msg-text";
+    textSpan.textContent = ": " + m.text;
+
+    div.appendChild(chanTag);
+    div.appendChild(userSpan);
+    div.appendChild(textSpan);
+    return div;
+  }
+
+  function renderUnifiedChatFeed(){
+    if(!unifiedChatMessagesEl) return;
+    if(channels.length === 0){
+      unifiedChatMessagesEl.innerHTML = "";
+      const empty = document.createElement("div");
+      empty.className = "unified-chat-empty";
+      empty.textContent = "Agregá un canal para ver sus mensajes acá.";
+      unifiedChatMessagesEl.appendChild(empty);
+      return;
+    }
+    const atBottom = isUnifiedFeedScrolledToBottom();
+    unifiedChatMessagesEl.innerHTML = "";
+    const visible = chatMessages.filter(m => unifiedVisibleChannels.has(m.channel));
+    if(visible.length === 0){
+      const empty = document.createElement("div");
+      empty.className = "unified-chat-empty";
+      empty.textContent = "Todavía no hay mensajes para mostrar acá.";
+      unifiedChatMessagesEl.appendChild(empty);
+      return;
+    }
+    visible.forEach(m => unifiedChatMessagesEl.appendChild(buildUnifiedMessageEl(m)));
+    if(atBottom) scrollUnifiedFeedToBottom();
+  }
+
+  function appendUnifiedMessageToFeed(m){
+    if(!unifiedChatMessagesEl) return;
+    if(!unifiedVisibleChannels.has(m.channel)) return;
+    const emptyEl = unifiedChatMessagesEl.querySelector(".unified-chat-empty");
+    if(emptyEl) unifiedChatMessagesEl.innerHTML = "";
+    const atBottom = isUnifiedFeedScrolledToBottom();
+    unifiedChatMessagesEl.appendChild(buildUnifiedMessageEl(m));
+    while(unifiedChatMessagesEl.children.length > MAX_MESSAGES){
+      unifiedChatMessagesEl.removeChild(unifiedChatMessagesEl.firstChild);
+    }
+    if(atBottom) scrollUnifiedFeedToBottom();
+  }
+
+  /* ---- construcción de la tile que se agrega al grid ---- */
+  function buildUnifiedChatTile(){
+    const tile = document.createElement("div");
+    tile.className = "tile unified-chat-tile";
+
+    const header = document.createElement("div");
+    header.className = "tile-header";
+
+    const nameEl = document.createElement("div");
+    nameEl.className = "tile-title";
+    nameEl.textContent = "🧩 Chat unificado";
+    nameEl.title = "Mensajes combinados de todos los canales";
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "icon-btn remove";
+    closeBtn.title = "Cerrar chat unificado";
+    closeBtn.textContent = "×";
+    closeBtn.addEventListener("click", () => {
+      unifiedChatMode = false;
+      saveUnifiedChatMode();
+      unifiedChatToggleBtn.classList.remove("active");
+      if(!authToken) closeIrc();
+      renderChannels();
+    });
+
+    header.appendChild(nameEl);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement("div");
+    body.className = "tile-body unified-chat-body";
+
+    const filtersRow = document.createElement("div");
+    filtersRow.className = "chat-dropdown-row unified-row-top";
+
+    const messagesEl = document.createElement("div");
+    messagesEl.className = "unified-chat-messages";
+
+    const targetsRow = document.createElement("div");
+    targetsRow.className = "chat-dropdown-row unified-row-bottom";
+
+    const sendForm = document.createElement("form");
+    sendForm.className = "chat-send-form";
+    const sendInput = document.createElement("input");
+    sendInput.type = "text";
+    sendInput.maxLength = 500;
+    const sendBtn = document.createElement("button");
+    sendBtn.type = "submit";
+    sendBtn.textContent = "➤";
+    sendForm.appendChild(sendInput);
+    sendForm.appendChild(sendBtn);
+
+    sendForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const text = sendInput.value.trim();
+      if(!text || unifiedSendTargets.size === 0) return;
+      let anyOk = false;
+      unifiedSendTargets.forEach(name => { if(sendChatMessage(name, text)) anyOk = true; });
+      if(anyOk) sendInput.value = "";
+    });
+
+    body.appendChild(filtersRow);
+    body.appendChild(messagesEl);
+    body.appendChild(targetsRow);
+    body.appendChild(sendForm);
+
+    tile.appendChild(header);
+    tile.appendChild(body);
+
+    // referencias vivas, usadas por addChatMessage() y updateAllChatInputsState()
+    unifiedChatMessagesEl = messagesEl;
+    unifiedChatSendInputEl = sendInput;
+    unifiedChatSendBtnEl = sendBtn;
+
+    buildDropdown(filtersRow, "Mostrar", unifiedVisibleChannels, () => {
+      renderUnifiedChatFeed();
+    });
+    buildDropdown(targetsRow, "Enviar a", unifiedSendTargets, () => {
+      updateAllChatInputsState();
+    });
+
+    renderUnifiedChatFeed();
+
+    return tile;
   }
 
   function applySharedChatMode(){
@@ -438,12 +829,26 @@
     applySharedChatMode();
   });
 
+  unifiedChatToggleBtn.addEventListener("click", () => {
+    unifiedChatMode = !unifiedChatMode;
+    saveUnifiedChatMode();
+    unifiedChatToggleBtn.classList.toggle("active", unifiedChatMode);
+    if(unifiedChatMode){
+      channels.forEach(c => { unifiedVisibleChannels.add(c.name); unifiedSendTargets.add(c.name); });
+      connectIrc();
+    }else if(!authToken){
+      closeIrc();
+    }
+    renderChannels();
+  });
+
   sharedChatSendForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const text = sharedChatInput.value.trim();
-    if(!text || !sharedChatActive) return;
-    const ok = sendChatMessage(sharedChatActive, text);
-    if(ok) sharedChatInput.value = "";
+    if(!text || sendTargets.size === 0) return;
+    let anyOk = false;
+    sendTargets.forEach(name => { if(sendChatMessage(name, text)) anyOk = true; });
+    if(anyOk) sharedChatInput.value = "";
   });
 
   sharedChatResizerEl.addEventListener("mousedown", (e) => {
@@ -526,14 +931,21 @@
      ===================================================================== */
   function renderChannels(){
     grid.innerHTML = "";
+    unifiedChatMessagesEl = null;
+    unifiedChatSendInputEl = null;
+    unifiedChatSendBtnEl = null;
 
     channels.forEach(ch => {
       grid.appendChild(buildTile(ch));
     });
 
+    if(unifiedChatMode && channels.length > 0){
+      grid.appendChild(buildUnifiedChatTile());
+    }
+
     updateGridLayout();
     updateAllChatInputsState();
-    if(sharedChatMode) renderSharedChatTabs();
+    if(sharedChatMode) renderSharedChatPanel();
   }
 
   function buildTile(ch){
@@ -651,7 +1063,13 @@
 
     chatToggle.addEventListener("click", () => {
       if(sharedChatMode){
-        setSharedActiveChannel(ch.name);
+        sharedChatActive = ch.name;
+        saveSharedChatActive();
+        renderChannelSelect();
+        renderSharedChatFrame();
+        grid.querySelectorAll('[data-role="chat-toggle"]').forEach(b => {
+          b.classList.toggle("active", b.dataset.channel === sharedChatActive);
+        });
         return;
       }
       ch.chatOpen = !ch.chatOpen;
@@ -742,10 +1160,22 @@
     });
     btns.forEach(b => { b.disabled = !authToken; });
 
-    sharedChatInput.disabled = !authToken;
-    sharedChatInput.placeholder = authToken ? "Enviar mensaje…" : "Inicia sesión para chatear";
+    const noTargets = sendTargets.size === 0;
+    sharedChatInput.disabled = !authToken || noTargets;
+    sharedChatInput.placeholder = !authToken
+      ? "Inicia sesión para chatear"
+      : (noTargets ? "Elegí a quién enviar arriba…" : "Enviar mensaje…");
     const sharedSendBtn = sharedChatSendForm.querySelector("button");
-    if(sharedSendBtn) sharedSendBtn.disabled = !authToken;
+    if(sharedSendBtn) sharedSendBtn.disabled = !authToken || noTargets;
+
+    if(unifiedChatSendInputEl){
+      const noUnifiedTargets = unifiedSendTargets.size === 0;
+      unifiedChatSendInputEl.disabled = !authToken || noUnifiedTargets;
+      unifiedChatSendInputEl.placeholder = !authToken
+        ? "Inicia sesión para chatear"
+        : (noUnifiedTargets ? "Elegí a quién enviar arriba…" : "Enviar mensaje…");
+      if(unifiedChatSendBtnEl) unifiedChatSendBtnEl.disabled = !authToken || noUnifiedTargets;
+    }
   }
 
   /* =====================================================================
@@ -770,22 +1200,36 @@
     }
 
     channels.push({ name, chatOpen: false, chatWidth: null, chatHeightMobile: null });
+    sendTargets.add(name);
+    unifiedVisibleChannels.add(name);
+    unifiedSendTargets.add(name);
     saveChannels();
     renderChannels();
     channelInput.value = "";
 
-    if(ircConnected) ircJoin(name);
+    if(ircSocket && (ircConnected || ircSocket.readyState === WebSocket.CONNECTING)){
+      if(ircConnected) ircJoin(name);
+      // si todavía se está conectando, el handler "open" une a todos los
+      // canales presentes en ese momento, así que no hace falta nada más.
+    }else if(authToken || unifiedChatMode){
+      connectIrc();
+    }
   });
 
   function removeChannel(name){
     channels = channels.filter(c => c.name !== name);
-    saveChannels();
+    sendTargets.delete(name);
+    unifiedVisibleChannels.delete(name);
+    unifiedSendTargets.delete(name);
+    chatMessages = chatMessages.filter(m => m.channel !== name);
     if(sharedChatActive === name){
       sharedChatActive = channels.length ? channels[0].name : null;
       saveSharedChatActive();
     }
+    saveChannels();
     renderChannels();
     if(ircConnected) ircPart(name);
+    if(channels.length === 0) closeIrc();
   }
 
   function reorderChannels(draggedName, targetName){
@@ -827,6 +1271,9 @@
     authToken = null;
     authUsername = null;
     closeIrc();
+    // reconectar en modo anónimo: se pierde la capacidad de enviar, pero
+    // el chat unificado sigue mostrando los mensajes de los canales.
+    if(unifiedChatMode && channels.length > 0) connectIrc();
     refreshAuthUI();
     updateAllChatInputsState();
   }
@@ -888,34 +1335,32 @@
   }
 
   /* =====================================================================
-     IRC sobre WebSocket (para enviar mensajes de chat autenticados)
+     IRC sobre WebSocket
      ===================================================================== */
+  // Con sesión iniciada nos conectamos con el nick real + token, lo que
+  // permite enviar mensajes. Si no hay sesión pero el chat unificado está
+  // activo, igual nos conectamos con un nick anónimo de solo lectura
+  // ("justinfanXXXXX") para poder leer y mezclar los mensajes en el feed
+  // — no permite enviar, pero sí ver el chat de todos los canales.
   function connectIrc(){
-    if(!authToken || !authUsername) return;
+    const authed = !!(authToken && authUsername);
+    if(!authed && !(unifiedChatMode && channels.length > 0)) return;
     closeIrc();
 
     ircSocket = new WebSocket("wss://irc-ws.chat.twitch.tv:443");
+    const anon = !authed;
+    const nick = anon ? ("justinfan" + Math.floor(10000 + Math.random() * 89999)) : authUsername;
 
     ircSocket.addEventListener("open", () => {
-      ircSocket.send("PASS oauth:" + authToken);
-      ircSocket.send("NICK " + authUsername);
+      if(!anon) ircSocket.send("PASS oauth:" + authToken);
+      ircSocket.send("NICK " + nick);
       ircSocket.send("CAP REQ :twitch.tv/commands twitch.tv/tags");
       channels.forEach(c => ircJoin(c.name));
     });
 
     ircSocket.addEventListener("message", (event) => {
       const lines = event.data.split("\r\n").filter(Boolean);
-      lines.forEach(line => {
-        if(line.startsWith("PING")){
-          ircSocket.send("PONG :tmi.twitch.tv");
-        }
-        if(line.includes("Login authentication failed") || line.includes("Improperly formatted auth")){
-          console.error("Falló la autenticación IRC:", line);
-        }
-        if(/\s001\s/.test(line)){
-          ircConnected = true;
-        }
-      });
+      lines.forEach(handleIrcLine);
     });
 
     ircSocket.addEventListener("close", () => {
@@ -926,6 +1371,77 @@
       console.error("Error de WebSocket IRC:", err);
       ircConnected = false;
     });
+  }
+
+  function parseIrcTags(tagStr){
+    const tags = {};
+    tagStr.split(";").forEach(pair => {
+      const idx = pair.indexOf("=");
+      if(idx === -1) return;
+      const key = pair.slice(0, idx);
+      const val = pair.slice(idx + 1)
+        .replace(/\\s/g, " ")
+        .replace(/\\:/g, ";")
+        .replace(/\\\\/g, "\\");
+      tags[key] = val;
+    });
+    return tags;
+  }
+
+  function handleIrcLine(line){
+    let rest = line;
+    let tags = {};
+
+    if(rest.startsWith("@")){
+      const sp = rest.indexOf(" ");
+      if(sp === -1) return;
+      tags = parseIrcTags(rest.slice(1, sp));
+      rest = rest.slice(sp + 1);
+    }
+
+    if(rest.startsWith("PING")){
+      ircSocket.send("PONG :tmi.twitch.tv");
+      return;
+    }
+
+    const match = rest.match(/^:(\S+)\s+(\S+)\s+(.*)$/);
+    if(!match){
+      if(/^:tmi\.twitch\.tv 001\b/.test(rest) || /\s001\s/.test(rest)) ircConnected = true;
+      return;
+    }
+
+    const prefix = match[1];
+    const command = match[2];
+    const params = match[3];
+
+    if(command === "001"){
+      ircConnected = true;
+      return;
+    }
+
+    if(command === "NOTICE"){
+      if(params.includes("Login authentication failed") || params.includes("Improperly formatted")){
+        console.error("Falló la autenticación IRC:", params);
+      }
+      return;
+    }
+
+    if(command === "PRIVMSG"){
+      const chanMatch = params.match(/^#(\S+)\s+:(.*)$/);
+      if(!chanMatch) return;
+      const channelName = chanMatch[1];
+      const text = chanMatch[2];
+      const user = tags["display-name"] || prefix.split("!")[0];
+      const color = tags["color"] || "";
+      addChatMessage(channelName, user, color, text);
+    }
+  }
+
+  function addChatMessage(channelName, user, color, text){
+    const msg = { id: msgIdCounter++, channel: channelName, user, color, text, ts: Date.now() };
+    chatMessages.push(msg);
+    if(chatMessages.length > MAX_MESSAGES) chatMessages.shift();
+    if(unifiedChatMode) appendUnifiedMessageToFeed(msg);
   }
 
   function closeIrc(){
@@ -983,7 +1499,9 @@
     sharedChatEl.hidden = !sharedChatMode;
     sharedChatResizerEl.hidden = !sharedChatMode;
     applySharedChatWidth();
+    unifiedChatToggleBtn.classList.toggle("active", unifiedChatMode);
     renderChannels();
+    if(unifiedChatMode && channels.length > 0) connectIrc();
   }
 
   init();
