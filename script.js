@@ -46,15 +46,11 @@
 
   // Chat compartido: se ve el chat NATIVO de Twitch (iframe) de un canal
   // a la vez —así se ven bien los emotes, badges y menciones—, y se
-  // cambia de canal con el selector. El envío sí puede ir a varios
-  // canales a la vez (eso no depende del iframe, va por IRC).
+  // cambia de canal con el selector. Para escribir se usa el input
+  // nativo del propio iframe de Twitch (no hay input propio acá).
   let sharedChatMode = loadSharedChatMode();
   let sharedChatActive = null;
   try{ sharedChatActive = localStorage.getItem(SHARED_ACTIVE_KEY) || null; }catch(e){ sharedChatActive = null; }
-
-  // A cuáles canales se les manda el mensaje al escribir en el chat
-  // compartido. Vive solo en memoria y arranca con todos los canales.
-  let sendTargets = new Set(channels.map(c => c.name));
 
   // Chat unificado: una tile OPCIONAL dentro del grid (independiente del
   // panel de chat compartido de arriba) que muestra un único feed con los
@@ -64,7 +60,7 @@
 
   // Qué canales se muestran en el feed unificado (filtro de lectura) y a
   // cuáles se les manda el mensaje al escribir ahí (destino de envío).
-  // Ambos viven solo en memoria y son independientes de "sendTargets".
+  // Ambos viven solo en memoria.
   let unifiedVisibleChannels = new Set(channels.map(c => c.name));
   let unifiedSendTargets = new Set(channels.map(c => c.name));
 
@@ -219,9 +215,6 @@
   const sharedChatResizerEl = document.getElementById("shared-chat-resizer");
   const sharedChatSelectEl = document.getElementById("shared-chat-select");
   const sharedChatFrameWrapEl = document.getElementById("shared-chat-frame-wrap");
-  const sharedChatTargetsEl = document.getElementById("shared-chat-targets");
-  const sharedChatSendForm = document.getElementById("shared-chat-send-form");
-  const sharedChatInput = document.getElementById("shared-chat-input");
 
   /* =====================================================================
      VALIDACIÓN DE NOMBRES DE CANAL
@@ -645,16 +638,9 @@
     sharedChatFrameWrapEl.appendChild(iframe);
   }
 
-  function renderChatTargets(){
-    buildDropdown(sharedChatTargetsEl, "Enviar a", sendTargets, () => {
-      updateAllChatInputsState();
-    });
-  }
-
   function renderSharedChatPanel(){
     renderChannelSelect();
     renderSharedChatFrame();
-    renderChatTargets();
   }
 
   /* =====================================================================
@@ -840,15 +826,6 @@
       closeIrc();
     }
     renderChannels();
-  });
-
-  sharedChatSendForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const text = sharedChatInput.value.trim();
-    if(!text || sendTargets.size === 0) return;
-    let anyOk = false;
-    sendTargets.forEach(name => { if(sendChatMessage(name, text)) anyOk = true; });
-    if(anyOk) sharedChatInput.value = "";
   });
 
   sharedChatResizerEl.addEventListener("mousedown", (e) => {
@@ -1160,14 +1137,6 @@
     });
     btns.forEach(b => { b.disabled = !authToken; });
 
-    const noTargets = sendTargets.size === 0;
-    sharedChatInput.disabled = !authToken || noTargets;
-    sharedChatInput.placeholder = !authToken
-      ? "Inicia sesión para chatear"
-      : (noTargets ? "Elegí a quién enviar arriba…" : "Enviar mensaje…");
-    const sharedSendBtn = sharedChatSendForm.querySelector("button");
-    if(sharedSendBtn) sharedSendBtn.disabled = !authToken || noTargets;
-
     if(unifiedChatSendInputEl){
       const noUnifiedTargets = unifiedSendTargets.size === 0;
       unifiedChatSendInputEl.disabled = !authToken || noUnifiedTargets;
@@ -1200,7 +1169,6 @@
     }
 
     channels.push({ name, chatOpen: false, chatWidth: null, chatHeightMobile: null });
-    sendTargets.add(name);
     unifiedVisibleChannels.add(name);
     unifiedSendTargets.add(name);
     saveChannels();
@@ -1218,7 +1186,6 @@
 
   function removeChannel(name){
     channels = channels.filter(c => c.name !== name);
-    sendTargets.delete(name);
     unifiedVisibleChannels.delete(name);
     unifiedSendTargets.delete(name);
     chatMessages = chatMessages.filter(m => m.channel !== name);
