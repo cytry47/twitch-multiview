@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multivista de Twitch</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <header id="topbar">
+    <h1>Multivista <span>Twitch</span></h1>
+
+    <form id="add-form">
+      <input type="text" id="channel-input" placeholder="nombre del canal" autocomplete="off" maxlength="25">
+      <button type="submit" class="btn btn-accent">Agregar canal</button>
+    </form>
+    <div id="add-error"></div>
+
+    <div id="auth-area">
+      <div id="auth-warning" hidden></div>
+      <button id="login-btn" class="btn">Iniciar sesión con Twitch</button>
+      <div id="user-chip" hidden>
+        <span class="dot"></span>
+        <span id="user-name"></span>
+        <button id="logout-btn" class="icon-btn" title="Cerrar sesión">×</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <div id="grid"></div>
+    <div id="empty-state">
+      Todavía no agregaste ningún canal.<br>
+      Escribí un nombre de usuario de Twitch arriba y tocá <strong>«Agregar canal»</strong> para empezar a verlo.
+    </div>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
