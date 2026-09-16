@@ -13,7 +13,7 @@
        y tiene que estar dada de alta tal cual en el panel de Twitch
        en "OAuth Redirect URLs".
      ===================================================================== */
-  const CLIENT_ID = "TU_CLIENT_ID_AQUI";
+  const CLIENT_ID = "m13brzygevbk4qrnhg32eimd6awkvc";
   const REDIRECT_URI = window.location.origin + window.location.pathname;
 
   const OAUTH_SCOPES = "chat:read chat:edit";
