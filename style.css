@@ -15,7 +15,7 @@
   --danger-hover: #ff6c76;
   --radius: 6px;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, "Roboto Mono", monospace;
-  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 *{ box-sizing: border-box; }
@@ -241,91 +241,32 @@ a{ color: var(--accent); }
 }
 #shared-chat[hidden]{ display:none; }
 
-.chat-dropdown-row{
+#shared-chat-tabs{
   display:flex;
-  align-items:center;
-  padding:6px 8px;
+  gap:4px;
+  padding:6px;
+  overflow-x:auto;
+  border-bottom:1px solid var(--border);
   background: var(--panel-alt);
   flex-shrink:0;
-  position:relative;
 }
-#shared-chat-select{ border-bottom:1px solid var(--border); }
-#shared-chat-targets{ border-top:1px solid var(--border); }
-
-.chat-dropdown{ position:relative; }
-
-.chat-dropdown-btn{
-  display:flex;
-  align-items:center;
-  gap:5px;
+#shared-chat-tabs button{
   background: var(--panel);
   border:1px solid var(--border);
-  color: var(--text);
-  border-radius: var(--radius);
-  padding:6px 10px;
-  font-size:12.5px;
-  font-family: var(--sans);
-}
-.chat-dropdown-btn:hover{ border-color: var(--accent); }
-.chat-dropdown-btn.open{ border-color: var(--accent); }
-.chat-dropdown-btn .dd-label{ color: var(--text-dim); }
-.chat-dropdown-btn .dd-value{ font-weight:600; }
-.chat-dropdown-btn .dd-caret{
   color: var(--text-dim);
-  font-size:10px;
-  transition: transform .12s;
-}
-.chat-dropdown-btn.open .dd-caret{ transform: rotate(180deg); }
-
-.chat-dropdown-menu{
-  position:absolute;
-  top: calc(100% + 4px);
-  left:0;
-  min-width:180px;
-  max-height:240px;
-  overflow-y:auto;
-  background: var(--panel);
-  border:1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0,0,0,.45);
-  padding:4px;
-  z-index:20;
-}
-#shared-chat-targets .chat-dropdown-menu{
-  top:auto;
-  bottom: calc(100% + 4px);
-}
-
-.dropdown-item{
-  display:flex;
-  align-items:center;
-  gap:8px;
-  padding:6px 8px;
-  border-radius:4px;
-  font-size:13px;
-  font-family: var(--sans);
-  color: var(--text);
-  cursor:pointer;
+  padding:5px 10px;
+  font-size:12px;
+  font-family: var(--mono);
   white-space:nowrap;
-}
-.dropdown-item:hover{ background: var(--panel-alt); }
-.dropdown-item input[type="checkbox"]{
-  accent-color: var(--accent);
-  width:14px;
-  height:14px;
   flex-shrink:0;
 }
-.dropdown-item-all{
-  border-bottom:1px solid var(--border);
-  margin-bottom:3px;
-  padding-bottom:8px;
+#shared-chat-tabs button:hover{ border-color: var(--accent); color: var(--text); }
+#shared-chat-tabs button.active{
+  color: var(--accent-text);
+  background: var(--accent);
+  border-color: var(--accent);
   font-weight:600;
-}
-.dd-dot{
-  width:8px;
-  height:8px;
-  border-radius:50%;
-  flex-shrink:0;
 }
 
 #shared-chat-frame-wrap{
@@ -338,7 +279,6 @@ a{ color: var(--accent); }
   width:100%;
   border:0;
 }
-
 #shared-chat-empty{
   margin:auto;
   color: var(--text-dim);

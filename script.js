@@ -43,24 +43,11 @@
   // que cada monitor (ej. 1080p vs 1440p) recuerda su propio acomodo.
   let layoutPrefs = loadLayoutPrefs();
 
-  // Chat compartido: se ve el chat NATIVO de Twitch (iframe) de un canal
-  // a la vez —así se ven bien los emotes, badges y menciones—, y se
-  // cambia de canal con el selector. El envío sí puede ir a varios
-  // canales a la vez (eso no depende del iframe, va por IRC).
+  // Chat compartido: un único panel de chat con pestañas por canal,
+  // en vez de un chat por cada tile.
   let sharedChatMode = loadSharedChatMode();
   let sharedChatActive = null;
   try{ sharedChatActive = localStorage.getItem(SHARED_ACTIVE_KEY) || null; }catch(e){ sharedChatActive = null; }
-
-  // A cuáles canales se les manda el mensaje al escribir en el chat
-  // compartido. Vive solo en memoria y arranca con todos los canales.
-  let sendTargets = new Set(channels.map(c => c.name));
-
-  const CHANNEL_PALETTE = ["#f2a93b","#5aa9e6","#7ed6a5","#e07be0","#ff8a65","#8d9eff","#ffd54f","#4dd0e1"];
-  function channelColor(name){
-    let hash = 0;
-    for(let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
-    return CHANNEL_PALETTE[hash % CHANNEL_PALETTE.length];
-  }
 
   // Estado de autenticación — SOLO EN MEMORIA, nunca en localStorage.
   let authToken = null;
@@ -184,9 +171,8 @@
   const sharedChatToggleBtn = document.getElementById("shared-chat-toggle");
   const sharedChatEl = document.getElementById("shared-chat");
   const sharedChatResizerEl = document.getElementById("shared-chat-resizer");
-  const sharedChatSelectEl = document.getElementById("shared-chat-select");
+  const sharedChatTabsEl = document.getElementById("shared-chat-tabs");
   const sharedChatFrameWrapEl = document.getElementById("shared-chat-frame-wrap");
-  const sharedChatTargetsEl = document.getElementById("shared-chat-targets");
   const sharedChatSendForm = document.getElementById("shared-chat-send-form");
   const sharedChatInput = document.getElementById("shared-chat-input");
 
@@ -392,234 +378,50 @@
     }
   }
 
-  /* ---- dropdown reutilizable con checkboxes (filtro de lectura / destino de envío) ---- */
-  function closeDropdowns(){
-    document.querySelectorAll(".chat-dropdown-menu").forEach(m => { m.hidden = true; });
-    document.querySelectorAll(".chat-dropdown-btn").forEach(b => b.classList.remove("open"));
-  }
-  document.addEventListener("click", closeDropdowns);
-
-  function summaryLabel(selectedSet, total){
-    if(total === 0) return "—";
-    if(selectedSet.size === 0) return "Ninguno";
-    if(selectedSet.size === total) return "Todos";
-    if(selectedSet.size === 1) return [...selectedSet][0];
-    return selectedSet.size + " canales";
+  function setSharedActiveChannel(name){
+    sharedChatActive = name;
+    saveSharedChatActive();
+    renderSharedChatTabs();
+    grid.querySelectorAll('[data-role="chat-toggle"]').forEach(b => {
+      b.classList.toggle("active", b.dataset.channel === name);
+    });
   }
 
-  function buildDropdown(containerEl, label, selectedSet, onChange){
-    containerEl.innerHTML = "";
-    if(channels.length === 0) return;
+  function renderSharedChatTabs(){
+    sharedChatTabsEl.innerHTML = "";
 
-    const wrap = document.createElement("div");
-    wrap.className = "chat-dropdown";
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "chat-dropdown-btn";
-
-    const btnLabel = document.createElement("span");
-    btnLabel.className = "dd-label";
-    btnLabel.textContent = label + ":";
-
-    const btnValue = document.createElement("span");
-    btnValue.className = "dd-value";
-    btnValue.textContent = summaryLabel(selectedSet, channels.length);
-
-    const caret = document.createElement("span");
-    caret.className = "dd-caret";
-    caret.textContent = "▾";
-
-    btn.appendChild(btnLabel);
-    btn.appendChild(btnValue);
-    btn.appendChild(caret);
-
-    const menu = document.createElement("div");
-    menu.className = "chat-dropdown-menu";
-    menu.hidden = true;
-    menu.addEventListener("click", e => e.stopPropagation());
-
-    function syncAllCheckbox(){
-      allCb.checked = selectedSet.size === channels.length;
-      allCb.indeterminate = selectedSet.size > 0 && selectedSet.size < channels.length;
-    }
-
-    const allRow = document.createElement("label");
-    allRow.className = "dropdown-item dropdown-item-all";
-    const allCb = document.createElement("input");
-    allCb.type = "checkbox";
-    allCb.addEventListener("change", () => {
-      if(allCb.checked) channels.forEach(c => selectedSet.add(c.name));
-      else selectedSet.clear();
-      menu.querySelectorAll("input[data-channel]").forEach(cb => {
-        cb.checked = selectedSet.has(cb.dataset.channel);
-      });
-      btnValue.textContent = summaryLabel(selectedSet, channels.length);
-      onChange();
-    });
-    allRow.appendChild(allCb);
-    allRow.appendChild(document.createTextNode("Todos"));
-    menu.appendChild(allRow);
-
-    channels.forEach(ch => {
-      const row = document.createElement("label");
-      row.className = "dropdown-item";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.dataset.channel = ch.name;
-      cb.checked = selectedSet.has(ch.name);
-      cb.addEventListener("change", () => {
-        if(cb.checked) selectedSet.add(ch.name);
-        else selectedSet.delete(ch.name);
-        syncAllCheckbox();
-        btnValue.textContent = summaryLabel(selectedSet, channels.length);
-        onChange();
-      });
-      const dot = document.createElement("span");
-      dot.className = "dd-dot";
-      dot.style.background = channelColor(ch.name);
-      row.appendChild(cb);
-      row.appendChild(dot);
-      row.appendChild(document.createTextNode(ch.name));
-      menu.appendChild(row);
-    });
-
-    syncAllCheckbox();
-
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const willOpen = menu.hidden;
-      closeDropdowns();
-      if(willOpen){
-        menu.hidden = false;
-        btn.classList.add("open");
-      }
-    });
-
-    wrap.appendChild(btn);
-    wrap.appendChild(menu);
-    containerEl.appendChild(wrap);
-  }
-
-  /* ---- selector de un solo canal (cuál chat NATIVO se muestra) ---- */
-  function buildSingleSelectDropdown(containerEl, label, getActive, setActive, onChange){
-    containerEl.innerHTML = "";
-    if(channels.length === 0) return;
-
-    const wrap = document.createElement("div");
-    wrap.className = "chat-dropdown";
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "chat-dropdown-btn";
-
-    const btnLabel = document.createElement("span");
-    btnLabel.className = "dd-label";
-    btnLabel.textContent = label + ":";
-
-    const btnValue = document.createElement("span");
-    btnValue.className = "dd-value";
-    btnValue.textContent = getActive() || "—";
-
-    const caret = document.createElement("span");
-    caret.className = "dd-caret";
-    caret.textContent = "▾";
-
-    btn.appendChild(btnLabel);
-    btn.appendChild(btnValue);
-    btn.appendChild(caret);
-
-    const menu = document.createElement("div");
-    menu.className = "chat-dropdown-menu";
-    menu.hidden = true;
-    menu.addEventListener("click", e => e.stopPropagation());
-
-    channels.forEach(ch => {
-      const row = document.createElement("label");
-      row.className = "dropdown-item";
-      const radio = document.createElement("input");
-      radio.type = "radio";
-      radio.name = "shared-chat-active-channel";
-      radio.checked = getActive() === ch.name;
-      radio.addEventListener("change", () => {
-        setActive(ch.name);
-        btnValue.textContent = ch.name;
-        closeDropdowns();
-        onChange();
-      });
-      const dot = document.createElement("span");
-      dot.className = "dd-dot";
-      dot.style.background = channelColor(ch.name);
-      row.appendChild(radio);
-      row.appendChild(dot);
-      row.appendChild(document.createTextNode(ch.name));
-      menu.appendChild(row);
-    });
-
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const willOpen = menu.hidden;
-      closeDropdowns();
-      if(willOpen){
-        menu.hidden = false;
-        btn.classList.add("open");
-      }
-    });
-
-    wrap.appendChild(btn);
-    wrap.appendChild(menu);
-    containerEl.appendChild(wrap);
-  }
-
-  function renderChannelSelect(){
     if(channels.length === 0){
-      sharedChatSelectEl.innerHTML = "";
-      return;
-    }
-    if(!sharedChatActive || !channels.some(c => c.name === sharedChatActive)){
-      sharedChatActive = channels[0].name;
-      saveSharedChatActive();
-    }
-    buildSingleSelectDropdown(
-      sharedChatSelectEl,
-      "Canal",
-      () => sharedChatActive,
-      (name) => {
-        sharedChatActive = name;
-        saveSharedChatActive();
-        grid.querySelectorAll('[data-role="chat-toggle"]').forEach(b => {
-          b.classList.toggle("active", b.dataset.channel === sharedChatActive);
-        });
-      },
-      renderSharedChatFrame
-    );
-  }
-
-  function renderSharedChatFrame(){
-    sharedChatFrameWrapEl.innerHTML = "";
-    if(channels.length === 0){
+      sharedChatFrameWrapEl.innerHTML = "";
       const empty = document.createElement("div");
       empty.id = "shared-chat-empty";
       empty.textContent = "Agregá un canal para ver su chat acá.";
       sharedChatFrameWrapEl.appendChild(empty);
       return;
     }
+
+    if(!sharedChatActive || !channels.some(c => c.name === sharedChatActive)){
+      sharedChatActive = channels[0].name;
+      saveSharedChatActive();
+    }
+
+    channels.forEach(ch => {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.textContent = ch.name;
+      tab.className = (ch.name === sharedChatActive) ? "active" : "";
+      tab.addEventListener("click", () => setSharedActiveChannel(ch.name));
+      sharedChatTabsEl.appendChild(tab);
+    });
+
+    renderSharedChatFrame();
+  }
+
+  function renderSharedChatFrame(){
+    sharedChatFrameWrapEl.innerHTML = "";
     if(!sharedChatActive) return;
     const iframe = document.createElement("iframe");
     iframe.src = `https://www.twitch.tv/embed/${encodeURIComponent(sharedChatActive)}/chat?parent=${encodeURIComponent(PARENT)}&darkpopout`;
     sharedChatFrameWrapEl.appendChild(iframe);
-  }
-
-  function renderChatTargets(){
-    buildDropdown(sharedChatTargetsEl, "Enviar a", sendTargets, () => {
-      updateAllChatInputsState();
-    });
-  }
-
-  function renderSharedChatPanel(){
-    renderChannelSelect();
-    renderSharedChatFrame();
-    renderChatTargets();
   }
 
   function applySharedChatMode(){
@@ -639,10 +441,9 @@
   sharedChatSendForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const text = sharedChatInput.value.trim();
-    if(!text || sendTargets.size === 0) return;
-    let anyOk = false;
-    sendTargets.forEach(name => { if(sendChatMessage(name, text)) anyOk = true; });
-    if(anyOk) sharedChatInput.value = "";
+    if(!text || !sharedChatActive) return;
+    const ok = sendChatMessage(sharedChatActive, text);
+    if(ok) sharedChatInput.value = "";
   });
 
   sharedChatResizerEl.addEventListener("mousedown", (e) => {
@@ -732,7 +533,7 @@
 
     updateGridLayout();
     updateAllChatInputsState();
-    if(sharedChatMode) renderSharedChatPanel();
+    if(sharedChatMode) renderSharedChatTabs();
   }
 
   function buildTile(ch){
@@ -850,13 +651,7 @@
 
     chatToggle.addEventListener("click", () => {
       if(sharedChatMode){
-        sharedChatActive = ch.name;
-        saveSharedChatActive();
-        renderChannelSelect();
-        renderSharedChatFrame();
-        grid.querySelectorAll('[data-role="chat-toggle"]').forEach(b => {
-          b.classList.toggle("active", b.dataset.channel === sharedChatActive);
-        });
+        setSharedActiveChannel(ch.name);
         return;
       }
       ch.chatOpen = !ch.chatOpen;
@@ -947,13 +742,10 @@
     });
     btns.forEach(b => { b.disabled = !authToken; });
 
-    const noTargets = sendTargets.size === 0;
-    sharedChatInput.disabled = !authToken || noTargets;
-    sharedChatInput.placeholder = !authToken
-      ? "Inicia sesión para chatear"
-      : (noTargets ? "Elegí a quién enviar arriba…" : "Enviar mensaje…");
+    sharedChatInput.disabled = !authToken;
+    sharedChatInput.placeholder = authToken ? "Enviar mensaje…" : "Inicia sesión para chatear";
     const sharedSendBtn = sharedChatSendForm.querySelector("button");
-    if(sharedSendBtn) sharedSendBtn.disabled = !authToken || noTargets;
+    if(sharedSendBtn) sharedSendBtn.disabled = !authToken;
   }
 
   /* =====================================================================
@@ -978,7 +770,6 @@
     }
 
     channels.push({ name, chatOpen: false, chatWidth: null, chatHeightMobile: null });
-    sendTargets.add(name);
     saveChannels();
     renderChannels();
     channelInput.value = "";
@@ -988,12 +779,11 @@
 
   function removeChannel(name){
     channels = channels.filter(c => c.name !== name);
-    sendTargets.delete(name);
+    saveChannels();
     if(sharedChatActive === name){
       sharedChatActive = channels.length ? channels[0].name : null;
       saveSharedChatActive();
     }
-    saveChannels();
     renderChannels();
     if(ircConnected) ircPart(name);
   }
@@ -1100,10 +890,6 @@
   /* =====================================================================
      IRC sobre WebSocket (para enviar mensajes de chat autenticados)
      ===================================================================== */
-  // Nos conectamos siempre que haya al menos un canal, para poder leer y
-  // mezclar los mensajes en el feed unificado — sin login usamos un nick
-  // anónimo de solo lectura (no permite enviar, pero sí ver el chat).
-  // Con sesión iniciada, usamos el nick real + token para poder enviar.
   function connectIrc(){
     if(!authToken || !authUsername) return;
     closeIrc();
