@@ -31,6 +31,7 @@
         <option value="6">6</option>
       </select>
       <button type="button" id="reset-layout-btn" class="btn" title="Restablecer columnas, tamaños y orden">↺ Restablecer diseño</button>
+      <button type="button" id="shared-chat-toggle" class="btn" title="Ver un solo chat compartido en vez de un chat por canal">💬 Chat compartido</button>
     </div>
 
     <div id="auth-area">
@@ -49,6 +50,16 @@
     <div id="empty-state">
       Todavía no agregaste ningún canal.<br>
       Escribí un nombre de usuario de Twitch arriba y tocá <strong>«Agregar canal»</strong> para empezar a verlo.
+    </div>
+
+    <div id="shared-chat-resizer" class="tile-resizer" hidden></div>
+    <div id="shared-chat" hidden>
+      <div id="shared-chat-tabs"></div>
+      <div id="shared-chat-frame-wrap"></div>
+      <form id="shared-chat-send-form" class="chat-send-form">
+        <input type="text" id="shared-chat-input" maxlength="500" placeholder="Enviar mensaje…">
+        <button type="submit">➤</button>
+      </form>
     </div>
   </main>
 

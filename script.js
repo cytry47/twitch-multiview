@@ -19,6 +19,10 @@
   const OAUTH_SCOPES = "chat:read chat:edit";
   const STORAGE_KEY = "twitch-multiview.channels";
   const LAYOUT_KEY_PREFIX = "twitch-multiview.layout.";
+  const SHARED_MODE_KEY = "twitch-multiview.sharedChatMode";
+  const SHARED_ACTIVE_KEY = "twitch-multiview.sharedChatActive";
+  const DEFAULT_SHARED_CHAT_WIDTH = 340;
+  const DEFAULT_SHARED_CHAT_HEIGHT_MOBILE = 260;
 
   const DEFAULT_CHAT_WIDTH = 300;   // px, panel de chat cuando el video y el chat están lado a lado
   const DEFAULT_CHAT_HEIGHT = 240;  // px, panel de chat cuando están apilados (pantallas angostas)
@@ -38,6 +42,12 @@
   // Preferencias de layout — se guardan por resolución de pantalla, así
   // que cada monitor (ej. 1080p vs 1440p) recuerda su propio acomodo.
   let layoutPrefs = loadLayoutPrefs();
+
+  // Chat compartido: un único panel de chat con pestañas por canal,
+  // en vez de un chat por cada tile.
+  let sharedChatMode = loadSharedChatMode();
+  let sharedChatActive = null;
+  try{ sharedChatActive = localStorage.getItem(SHARED_ACTIVE_KEY) || null; }catch(e){ sharedChatActive = null; }
 
   // Estado de autenticación — SOLO EN MEMORIA, nunca en localStorage.
   let authToken = null;
@@ -92,7 +102,9 @@
       rowFr: null,
       dimsKey: null,
       chatWidth: DEFAULT_CHAT_WIDTH,
-      chatHeightMobile: DEFAULT_CHAT_HEIGHT
+      chatHeightMobile: DEFAULT_CHAT_HEIGHT,
+      sharedChatWidth: DEFAULT_SHARED_CHAT_WIDTH,
+      sharedChatHeightMobile: DEFAULT_SHARED_CHAT_HEIGHT_MOBILE
     };
     try{
       const raw = localStorage.getItem(LAYOUT_KEY_PREFIX + getScreenKey());
@@ -104,7 +116,9 @@
         rowFr: Array.isArray(parsed.rowFr) ? parsed.rowFr : null,
         dimsKey: parsed.dimsKey || null,
         chatWidth: typeof parsed.chatWidth === "number" ? parsed.chatWidth : DEFAULT_CHAT_WIDTH,
-        chatHeightMobile: typeof parsed.chatHeightMobile === "number" ? parsed.chatHeightMobile : DEFAULT_CHAT_HEIGHT
+        chatHeightMobile: typeof parsed.chatHeightMobile === "number" ? parsed.chatHeightMobile : DEFAULT_CHAT_HEIGHT,
+        sharedChatWidth: typeof parsed.sharedChatWidth === "number" ? parsed.sharedChatWidth : DEFAULT_SHARED_CHAT_WIDTH,
+        sharedChatHeightMobile: typeof parsed.sharedChatHeightMobile === "number" ? parsed.sharedChatHeightMobile : DEFAULT_SHARED_CHAT_HEIGHT_MOBILE
       };
     }catch(e){
       console.warn("No se pudo leer las preferencias de layout:", e);
@@ -118,6 +132,21 @@
     }catch(e){
       console.warn("No se pudo guardar el layout:", e);
     }
+  }
+
+  function loadSharedChatMode(){
+    try{ return localStorage.getItem(SHARED_MODE_KEY) === "1"; }
+    catch(e){ return false; }
+  }
+  function saveSharedChatMode(){
+    try{ localStorage.setItem(SHARED_MODE_KEY, sharedChatMode ? "1" : "0"); }
+    catch(e){ /* noop */ }
+  }
+  function saveSharedChatActive(){
+    try{
+      if(sharedChatActive) localStorage.setItem(SHARED_ACTIVE_KEY, sharedChatActive);
+      else localStorage.removeItem(SHARED_ACTIVE_KEY);
+    }catch(e){ /* noop */ }
   }
 
   /* =====================================================================
@@ -138,6 +167,14 @@
   const colsSelect = document.getElementById("cols-select");
   const resetLayoutBtn = document.getElementById("reset-layout-btn");
   const dragOverlay = document.getElementById("drag-overlay");
+
+  const sharedChatToggleBtn = document.getElementById("shared-chat-toggle");
+  const sharedChatEl = document.getElementById("shared-chat");
+  const sharedChatResizerEl = document.getElementById("shared-chat-resizer");
+  const sharedChatTabsEl = document.getElementById("shared-chat-tabs");
+  const sharedChatFrameWrapEl = document.getElementById("shared-chat-frame-wrap");
+  const sharedChatSendForm = document.getElementById("shared-chat-send-form");
+  const sharedChatInput = document.getElementById("shared-chat-input");
 
   /* =====================================================================
      VALIDACIÓN DE NOMBRES DE CANAL
@@ -323,7 +360,129 @@
     requestAnimationFrame(() => positionGridHandles(dims));
   }
 
-  window.addEventListener("resize", updateGridLayout);
+  window.addEventListener("resize", () => {
+    updateGridLayout();
+    if(sharedChatMode) applySharedChatWidth();
+  });
+
+  /* =====================================================================
+     CHAT COMPARTIDO
+     ===================================================================== */
+  function applySharedChatWidth(){
+    if(isNarrow()){
+      sharedChatEl.style.width = "";
+      sharedChatEl.style.height = (layoutPrefs.sharedChatHeightMobile || DEFAULT_SHARED_CHAT_HEIGHT_MOBILE) + "px";
+    }else{
+      sharedChatEl.style.height = "";
+      sharedChatEl.style.width = (layoutPrefs.sharedChatWidth || DEFAULT_SHARED_CHAT_WIDTH) + "px";
+    }
+  }
+
+  function setSharedActiveChannel(name){
+    sharedChatActive = name;
+    saveSharedChatActive();
+    renderSharedChatTabs();
+    grid.querySelectorAll('[data-role="chat-toggle"]').forEach(b => {
+      b.classList.toggle("active", b.dataset.channel === name);
+    });
+  }
+
+  function renderSharedChatTabs(){
+    sharedChatTabsEl.innerHTML = "";
+
+    if(channels.length === 0){
+      sharedChatFrameWrapEl.innerHTML = "";
+      const empty = document.createElement("div");
+      empty.id = "shared-chat-empty";
+      empty.textContent = "Agregá un canal para ver su chat acá.";
+      sharedChatFrameWrapEl.appendChild(empty);
+      return;
+    }
+
+    if(!sharedChatActive || !channels.some(c => c.name === sharedChatActive)){
+      sharedChatActive = channels[0].name;
+      saveSharedChatActive();
+    }
+
+    channels.forEach(ch => {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.textContent = ch.name;
+      tab.className = (ch.name === sharedChatActive) ? "active" : "";
+      tab.addEventListener("click", () => setSharedActiveChannel(ch.name));
+      sharedChatTabsEl.appendChild(tab);
+    });
+
+    renderSharedChatFrame();
+  }
+
+  function renderSharedChatFrame(){
+    sharedChatFrameWrapEl.innerHTML = "";
+    if(!sharedChatActive) return;
+    const iframe = document.createElement("iframe");
+    iframe.src = `https://www.twitch.tv/embed/${encodeURIComponent(sharedChatActive)}/chat?parent=${encodeURIComponent(PARENT)}&darkpopout`;
+    sharedChatFrameWrapEl.appendChild(iframe);
+  }
+
+  function applySharedChatMode(){
+    sharedChatToggleBtn.classList.toggle("active", sharedChatMode);
+    sharedChatEl.hidden = !sharedChatMode;
+    sharedChatResizerEl.hidden = !sharedChatMode;
+    applySharedChatWidth();
+    renderChannels();
+  }
+
+  sharedChatToggleBtn.addEventListener("click", () => {
+    sharedChatMode = !sharedChatMode;
+    saveSharedChatMode();
+    applySharedChatMode();
+  });
+
+  sharedChatSendForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = sharedChatInput.value.trim();
+    if(!text || !sharedChatActive) return;
+    const ok = sendChatMessage(sharedChatActive, text);
+    if(ok) sharedChatInput.value = "";
+  });
+
+  sharedChatResizerEl.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const narrow = isNarrow();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const rect = sharedChatEl.getBoundingClientRect();
+    const startWidth = rect.width;
+    const startHeight = rect.height;
+
+    sharedChatResizerEl.classList.add("dragging");
+    beginDrag(narrow ? "row-resize" : "col-resize");
+
+    function onMove(ev){
+      if(narrow){
+        const dy = startY - ev.clientY;
+        let h = startHeight + dy;
+        h = Math.max(140, Math.min(h, Math.round(window.innerHeight * 0.75)));
+        sharedChatEl.style.height = h + "px";
+        layoutPrefs.sharedChatHeightMobile = h;
+      }else{
+        const dx = startX - ev.clientX;
+        let w = startWidth + dx;
+        w = Math.max(220, Math.min(w, 700));
+        sharedChatEl.style.width = w + "px";
+        layoutPrefs.sharedChatWidth = w;
+      }
+    }
+    function onUp(){
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      sharedChatResizerEl.classList.remove("dragging");
+      endDrag();
+      saveLayoutPrefs();
+    }
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
 
   /* =====================================================================
      CONTROLES DE LAYOUT (columnas manuales + reset)
@@ -350,12 +509,15 @@
       rowFr: null,
       dimsKey: null,
       chatWidth: DEFAULT_CHAT_WIDTH,
-      chatHeightMobile: DEFAULT_CHAT_HEIGHT
+      chatHeightMobile: DEFAULT_CHAT_HEIGHT,
+      sharedChatWidth: DEFAULT_SHARED_CHAT_WIDTH,
+      sharedChatHeightMobile: DEFAULT_SHARED_CHAT_HEIGHT_MOBILE
     };
     channels.forEach(c => { c.chatWidth = null; c.chatHeightMobile = null; });
     syncColsSelect();
     saveLayoutPrefs();
     saveChannels();
+    applySharedChatWidth();
     renderChannels();
   });
 
@@ -371,6 +533,7 @@
 
     updateGridLayout();
     updateAllChatInputsState();
+    if(sharedChatMode) renderSharedChatTabs();
   }
 
   function buildTile(ch){
@@ -418,9 +581,12 @@
     nameEl.title = ch.name;
 
     const chatToggle = document.createElement("button");
-    chatToggle.className = "icon-btn" + (ch.chatOpen ? " active" : "");
-    chatToggle.title = "Mostrar / ocultar chat";
+    const chatToggleIsActive = sharedChatMode ? (sharedChatActive === ch.name) : ch.chatOpen;
+    chatToggle.className = "icon-btn" + (chatToggleIsActive ? " active" : "");
+    chatToggle.title = sharedChatMode ? "Ver el chat de este canal en el panel compartido" : "Mostrar / ocultar chat";
     chatToggle.textContent = "💬";
+    chatToggle.dataset.role = "chat-toggle";
+    chatToggle.dataset.channel = ch.name;
 
     const removeBtn = document.createElement("button");
     removeBtn.className = "icon-btn remove";
@@ -446,12 +612,14 @@
     videoWrap.appendChild(videoFrame);
 
     // divisor arrastrable entre video y chat
+    const showOwnChat = !sharedChatMode && ch.chatOpen;
+
     const resizer = document.createElement("div");
     resizer.className = "tile-resizer";
-    if(!ch.chatOpen) resizer.hidden = true;
+    resizer.hidden = !showOwnChat;
 
     const chatPanel = document.createElement("div");
-    chatPanel.className = "chat-panel" + (ch.chatOpen ? "" : " hidden");
+    chatPanel.className = "chat-panel" + (showOwnChat ? "" : " hidden");
     applyChatSize(ch, chatPanel);
 
     const chatFrame = document.createElement("iframe");
@@ -482,6 +650,10 @@
     chatPanel.appendChild(sendForm);
 
     chatToggle.addEventListener("click", () => {
+      if(sharedChatMode){
+        setSharedActiveChannel(ch.name);
+        return;
+      }
       ch.chatOpen = !ch.chatOpen;
       saveChannels();
       chatToggle.classList.toggle("active", ch.chatOpen);
@@ -569,6 +741,11 @@
       inp.placeholder = authToken ? "Enviar mensaje…" : "Inicia sesión para chatear";
     });
     btns.forEach(b => { b.disabled = !authToken; });
+
+    sharedChatInput.disabled = !authToken;
+    sharedChatInput.placeholder = authToken ? "Enviar mensaje…" : "Inicia sesión para chatear";
+    const sharedSendBtn = sharedChatSendForm.querySelector("button");
+    if(sharedSendBtn) sharedSendBtn.disabled = !authToken;
   }
 
   /* =====================================================================
@@ -603,6 +780,10 @@
   function removeChannel(name){
     channels = channels.filter(c => c.name !== name);
     saveChannels();
+    if(sharedChatActive === name){
+      sharedChatActive = channels.length ? channels[0].name : null;
+      saveSharedChatActive();
+    }
     renderChannels();
     if(ircConnected) ircPart(name);
   }
@@ -798,6 +979,10 @@
     handleOAuthRedirect();
     refreshAuthUI();
     syncColsSelect();
+    sharedChatToggleBtn.classList.toggle("active", sharedChatMode);
+    sharedChatEl.hidden = !sharedChatMode;
+    sharedChatResizerEl.hidden = !sharedChatMode;
+    applySharedChatWidth();
     renderChannels();
   }
 
