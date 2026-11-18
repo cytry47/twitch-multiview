@@ -16,15 +16,31 @@
   <header id="topbar">
     <h1>Multivista <span>Twitch</span></h1>
 
-    <form id="add-form">
-      <input type="text" id="channel-input" placeholder="nombre del canal" autocomplete="off" maxlength="25">
-      <button type="submit" class="btn btn-accent">Agregar canal</button>
-    </form>
-    <div id="add-error"></div>
+    <div id="add-group" class="tb-group">
+      <form id="add-form">
+        <input type="text" id="channel-input" placeholder="nombre del canal" autocomplete="off" maxlength="25" aria-label="Nombre del canal">
+        <button type="submit" class="btn btn-accent">Agregar canal</button>
+      </form>
+      <div id="follows-wrap">
+        <button type="button" id="follows-btn" class="btn" aria-haspopup="true" aria-expanded="false" aria-controls="follows-menu" data-short="★ Seguidos">Inicia sesión para ver tus seguidos</button>
+        <div id="follows-menu" role="dialog" aria-label="Agregar de mis seguidos" hidden>
+          <div class="setups-head">Mis seguidos</div>
+          <input type="search" id="follows-search" placeholder="buscar canal" autocomplete="off" maxlength="25" aria-label="Buscar entre tus seguidos">
+          <div id="follows-status" class="setups-note" aria-live="polite"></div>
+          <button type="button" id="follows-retry" class="btn" hidden>Reintentar</button>
+          <div id="follows-list" role="group" aria-label="Canales que sigues"></div>
+          <div class="follows-footer">
+            <span id="follows-count" class="setups-note"></span>
+            <button type="button" id="follows-add-btn" class="btn btn-accent" disabled>Agregar seleccionados</button>
+          </div>
+        </div>
+      </div>
+      <div id="add-error" role="alert"></div>
+    </div>
 
-    <div id="layout-controls">
-      <label for="cols-select">Columnas</label>
-      <select id="cols-select">
+    <div id="layout-controls" class="tb-group">
+      <label for="cols-select">Diseño</label>
+      <select id="cols-select" title="Diseño: columnas o Foco">
         <option value="auto">Auto</option>
         <option value="1">1</option>
         <option value="2">2</option>
@@ -32,24 +48,62 @@
         <option value="4">4</option>
         <option value="5">5</option>
         <option value="6">6</option>
+        <option value="focus">Foco</option>
       </select>
-      <button type="button" id="reset-layout-btn" class="btn" title="Restablecer columnas, tamaños y orden">↺ Restablecer diseño</button>
-      <button type="button" id="chat-panel-toggle" class="btn" title="Mostrar / ocultar el panel de chat">💬 Chat</button>
+      <div id="setups-wrap">
+        <button type="button" id="setups-btn" class="btn" aria-haspopup="true" aria-expanded="false" aria-controls="setups-menu" aria-label="Setups" data-tip="Guardar, cargar y compartir tus combinaciones de canales"><span class="btn-ico" aria-hidden="true">☰</span><span class="btn-lbl">Setups</span></button>
+        <div id="setups-menu" role="dialog" aria-label="Setups guardados" hidden>
+          <div class="setups-head">Setups guardados</div>
+          <div id="setups-list"></div>
+          <div id="setups-empty" class="setups-note">Todavía no guardaste ningún setup.</div>
+          <div class="setups-actions">
+            <button type="button" id="setups-save-btn" class="btn">＋ Guardar actual como…</button>
+            <form id="setups-save-form" hidden>
+              <input type="text" id="setups-save-input" maxlength="40" placeholder="nombre del setup" autocomplete="off" aria-label="Nombre del setup">
+              <button type="submit" class="btn btn-accent">Guardar</button>
+              <button type="button" id="setups-save-cancel" class="btn">Cancelar</button>
+            </form>
+            <div id="setups-error" class="setups-note setups-error"></div>
+            <div class="setups-sep"></div>
+            <button type="button" id="share-copy-btn" class="btn">🔗 Copiar link</button>
+            <input type="text" id="share-url" readonly hidden aria-label="Link para compartir">
+            <div id="share-status" class="setups-note"></div>
+            <div class="setups-sep"></div>
+            <div class="setups-head setups-subhead">Diseño</div>
+            <button type="button" id="reset-layout-btn" class="btn" title="Volver a columnas automáticas, tamaños y ancho del chat por defecto">↺ Restablecer diseño</button>
+            <div id="reset-status" class="setups-note"></div>
+          </div>
+        </div>
+      </div>
+      <button type="button" id="chat-panel-toggle" class="btn" aria-label="Chat" data-tip="Mostrar / ocultar el panel de chat"><span class="btn-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="15" height="15" focusable="false"><path d="M4 5h16v11H9l-5 4V5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></span><span class="btn-lbl">Chat</span></button>
+      <button type="button" id="hide-offline-btn" class="btn btn-icon" aria-pressed="false" aria-label="Ocultar desconectados" data-tip="Ocultar desconectados (su chat sigue en las pestañas)">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M4 4l16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
     </div>
 
     <div id="auth-area">
       <div id="auth-warning" hidden></div>
-      <button id="login-btn" class="btn">Iniciar sesión con Twitch</button>
+      <button id="login-btn" class="btn" aria-label="Iniciar sesión con Twitch"><svg class="twitch-glyph" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path fill="currentColor" d="M4.3 3 3 6.4V20h4.6v2.5h2.6L12.7 20h3.7l5-5V3H4.3zm15.4 11.1-2.9 2.9h-4.6l-2.5 2.5V17H5.9V4.7h13.8v9.4zM16.8 7.9v5h-1.7v-5h1.7zm-4.6 0v5h-1.7v-5h1.7z"/></svg><span class="btn-lbl" data-short="Entrar">Iniciar sesión con Twitch</span></button>
       <div id="user-chip" hidden>
         <span class="dot"></span>
         <span id="user-name"></span>
-        <button id="logout-btn" class="icon-btn" title="Cerrar sesión">×</button>
+        <button id="logout-btn" class="icon-btn" title="Cerrar sesión" aria-label="Cerrar sesión">×</button>
       </div>
     </div>
   </header>
 
+  <div id="shared-bar" hidden>
+    <span>Vista compartida — tu lista guardada no se modifica.</span>
+    <button type="button" id="shared-save-btn" class="btn btn-accent">Guardar como mi lista</button>
+    <button type="button" id="shared-exit-btn" class="btn">Volver a mi lista</button>
+  </div>
+
   <main id="main">
     <div id="grid"></div>
+    <div id="all-hidden-msg" hidden>
+      Todos tus canales están desconectados.<br>
+      Desactiva <strong>«Ocultar desconectados»</strong> para verlos.
+    </div>
     <div id="empty-state">
       Todavía no agregaste ningún canal.<br>
       Escribe un nombre de usuario de Twitch arriba y toca <strong>«Agregar canal»</strong> para empezar a verlo.
@@ -57,7 +111,11 @@
 
     <div id="chat-resizer" class="panel-resizer" hidden></div>
     <aside id="chat-panel" hidden>
-      <div id="chat-tabs" role="tablist"></div>
+      <div id="chat-tabs-wrap">
+        <button type="button" class="tabs-arrow left" id="tabs-left" tabindex="-1" aria-label="Ver pestañas anteriores" hidden>‹</button>
+        <div id="chat-tabs" role="tablist"></div>
+        <button type="button" class="tabs-arrow right" id="tabs-right" tabindex="-1" aria-label="Ver más pestañas" hidden>›</button>
+      </div>
       <div id="chat-feed-wrap">
         <div id="chat-feed" aria-live="off"></div>
         <div id="chat-feed-empty"></div>

@@ -54,8 +54,9 @@ a{ color: var(--accent); }
 #topbar{
   display:flex;
   align-items:center;
-  gap:14px;
-  padding:10px 16px;
+  gap:8px 16px;
+  padding:8px 16px;
+  min-height:49px;
   background: var(--panel);
   border-bottom:1px solid var(--border);
   flex-wrap: wrap;
@@ -66,11 +67,16 @@ a{ color: var(--accent); }
   font-weight:600;
   letter-spacing:.2px;
   margin:0;
-  padding-right:6px;
-  border-right:1px solid var(--border);
-  margin-right:2px;
   white-space:nowrap;
+  flex-shrink:0;
 }
+.tb-group{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+#add-group{ position:relative; }
 #topbar h1 span{ color: var(--text-dim); font-weight:400; }
 
 #add-form{
@@ -85,7 +91,8 @@ a{ color: var(--accent); }
   border-radius: var(--radius);
   padding:7px 10px;
   font-size:13px;
-  width:180px;
+  width:170px;
+  min-width:0;
   outline:none;
 }
 #add-form input[type="text"]:focus{
@@ -114,23 +121,30 @@ a{ color: var(--accent); }
 }
 .btn-accent:hover{ background: var(--accent-hover); border-color: var(--accent-hover); }
 
+/* el error flota debajo del formulario: no empuja nada en la barra */
 #add-error{
+  position:absolute;
+  top:calc(100% + 6px);
+  left:0;
+  z-index:400;
   font-size:12px;
   color: var(--danger);
-  min-height:1em;
+  background: var(--panel);
+  border:1px solid rgba(224,85,95,.5);
+  border-radius: var(--radius);
+  padding:4px 8px;
+  white-space:nowrap;
+  pointer-events:none;
 }
+#add-error:empty{ display:none; }
 
 /* =====================================================================
    CONTROLES DE LAYOUT
    ===================================================================== */
 #layout-controls{
-  display:flex;
-  align-items:center;
-  gap:8px;
+  margin-left:auto;
   font-size:12px;
   color: var(--text-dim);
-  padding-left:10px;
-  border-left:1px solid var(--border);
 }
 #layout-controls select{
   background: var(--panel-alt);
@@ -145,8 +159,8 @@ a{ color: var(--accent); }
 #layout-controls .btn{ font-size:12px; padding:6px 10px; }
 
 #auth-area{
-  margin-left:auto;
   display:flex;
+  flex-shrink:0;
   align-items:center;
   gap:10px;
 }
@@ -379,6 +393,7 @@ a{ color: var(--accent); }
    TILE
    ===================================================================== */
 .tile{
+  container-type: inline-size;
   background: var(--panel);
   border:1px solid var(--border);
   border-radius: var(--radius);
@@ -392,6 +407,9 @@ a{ color: var(--accent); }
 .tile.drag-over{ outline:2px dashed var(--accent); outline-offset:-2px; }
 
 .tile-header{
+  position:relative;
+  min-width:0;
+  overflow:hidden;
   display:flex;
   align-items:center;
   gap:8px;
@@ -413,7 +431,9 @@ a{ color: var(--accent); }
   overflow:hidden;
   text-overflow:ellipsis;
   white-space:nowrap;
-  flex:1;
+  flex:0 1 auto;
+  min-width:3ch;
+  max-width:40%;
 }
 .tile-header .channel-name::before{
   content:"#";
@@ -450,6 +470,7 @@ a{ color: var(--accent); }
   min-height:0;
   background:#000;
 }
+.player-host{ width:100%; height:100%; }
 .tile-video-wrap iframe{
   width:100%;
   height:100%;
@@ -506,11 +527,164 @@ a{ color: var(--accent); }
   margin:-4px 1px;
 }
 
+
+/* =====================================================================
+   RONDA 2 — estado en vivo, audio, modo Foco
+   ===================================================================== */
+#all-hidden-msg{
+  flex:1;
+  margin:auto;
+  text-align:center;
+  color: var(--text-dim);
+  max-width:360px;
+  line-height:1.5;
+  font-size:14px;
+  align-self:center;
+}
+#all-hidden-msg[hidden]{ display:none; }
+#all-hidden-msg strong{ color: var(--text); }
+
+#hide-offline-btn.active{
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  font-weight:600;
+}
+
+/* tiles desconectados: atenuados; ocultos si "Ocultar desconectados" */
+.tile.offline .tile-body{ opacity:.35; filter:grayscale(.6); }
+.tile.offline .tile-header{ opacity:.75; }
+.tile.hidden-offline{ display:none !important; }
+
+.live-status{
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  flex-shrink:0;
+  font-size:10.5px;
+  font-weight:700;
+  letter-spacing:.03em;
+  color: var(--text-dim);
+  white-space:nowrap;
+}
+.live-status[hidden]{ display:none; }
+.live-status .status-dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background: var(--text-dim);
+}
+.live-status.is-live{ color:#ff4d57; }
+.live-status.is-live .status-dot{ background:#ff2d3a; box-shadow:0 0 0 2px rgba(255,45,58,.25); }
+
+.viewers{
+  flex-shrink:0;
+  font-size:11px;
+  font-weight:600;
+  color: var(--text);
+  white-space:nowrap;
+}
+.viewers::before{ content:"👁 "; font-size:10px; }
+.viewers[hidden]{ display:none; }
+
+.tile-meta{
+  flex:1 1 0;
+  min-width:0;
+  display:flex;
+  align-items:baseline;
+  gap:6px;
+  overflow:hidden;
+  white-space:nowrap;
+  font-size:11.5px;
+}
+.tile-meta .stream-title{
+  flex:1 1 auto;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  color: var(--text);
+}
+.tile-meta .stream-game{
+  flex:0 1 auto;
+  max-width:40%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  color: var(--text-dim);
+}
+.tile-meta .stream-game:empty{ display:none; }
+
+.chat-tab .live-dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#ff2d3a;
+  flex-shrink:0;
+}
+.chat-tab .live-dot[hidden]{ display:none; }
+
+/* audio */
+.tile-audio{
+  display:flex;
+  align-items:center;
+  gap:4px;
+  flex-shrink:0;
+}
+.speaker-btn{ width:auto; min-width:24px; padding:0 4px; }
+.speaker-btn.active{ color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
+.speaker-btn.armed{
+  font-size:11px;
+  color: var(--accent);
+  border-color: var(--accent);
+  animation: armed-pulse 1.6s ease-in-out infinite;
+}
+@keyframes armed-pulse{ 50%{ background: rgba(242,169,59,.18); } }
+.vol-slider{
+  display:none;
+  width:70px;
+  accent-color: var(--accent);
+  cursor:pointer;
+}
+.tile-header:hover .vol-slider,
+.tile-audio:focus-within .vol-slider{ display:block; }
+
+.focus-btn{ width:auto; padding:0 5px; font-size:11.5px; white-space:nowrap; }
+#grid.focus-mode .tile.is-focus .focus-btn{ color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
+
+/* headers angostos: primero se va el juego, luego el título */
+@container (max-width: 420px){
+  .tile-meta .stream-game{ display:none; }
+  .focus-btn{ font-size:0; padding:0; width:24px; }
+  .focus-btn::before{ content:"⤢"; font-size:13px; }
+}
+@container (max-width: 300px){
+  .tile-meta{ display:none; }
+  .viewers{ display:none; }
+  .tile-header{ gap:5px; padding:6px 5px; }
+  .live-status .status-text{ display:none; }
+  .speaker-btn.armed{ max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* al mostrar el volumen en un tile chico, el nombre cede su lugar */
+  .vol-slider{ width:56px; }
+  .tile-header:hover .channel-name,
+  .tile-header:has(.tile-audio:focus-within) .channel-name{ display:none; }
+}
+@container (max-width: 230px){
+  .tile-header{ gap:4px; }
+  .tile-header .drag-handle,
+  .tile-header .chat-btn{ display:none; }
+  .speaker-btn.armed{ max-width:24px; padding:0 3px; }
+}
+
+/* pantalla completa de un tile (tecla F en modo Foco) */
+.tile:fullscreen{ border:0; border-radius:0; }
+
+/* modo Foco en pantallas angostas: el grid hace scroll vertical */
+#grid.focus-narrow{ overflow-y:auto; align-content:start; }
+
 /* responsive: panel de chat debajo del grid en pantallas angostas */
 @media (max-width: 699px){
   #topbar{ gap:8px; padding:8px 10px; }
   #topbar h1{ border-right:none; }
-  #layout-controls{ border-left:none; padding-left:0; }
+  #layout-controls{ border-left:none; padding-left:0; flex-wrap:wrap; }
   #main{ flex-direction: column; padding:6px; }
   #grid{ min-height:0; overflow-y:auto; height:auto; }
   .panel-resizer{
@@ -526,4 +700,403 @@ a{ color: var(--accent); }
     min-height:140px;
     max-height:75vh;
   }
+}
+
+/* =====================================================================
+   SETUPS (menú) + VISTA COMPARTIDA (ronda 3a)
+   ===================================================================== */
+#setups-wrap{ position:relative; }
+#setups-btn.active{ border-color: var(--accent); color: var(--accent); }
+#setups-menu{
+  position:absolute;
+  top:calc(100% + 6px);
+  right:0;
+  z-index:500;
+  width:320px;
+  max-width:calc(100vw - 16px);
+  max-height:70vh;
+  overflow-y:auto;
+  background: var(--panel);
+  border:1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  padding:8px;
+  color: var(--text);
+  font-size:13px;
+}
+#setups-menu[hidden]{ display:none; }
+.setups-head{ font-size:11px; font-weight:600; letter-spacing:.4px; text-transform:uppercase; color: var(--text-dim); padding:2px 4px 8px; }
+.setups-note{ font-size:12px; color: var(--text-dim); padding:4px; }
+.setups-note:empty{ display:none; }
+.setups-note[hidden]{ display:none; }
+.setups-error{ color: var(--danger); }
+.setups-sep{ height:1px; background: var(--border); margin:8px 0; }
+.setups-actions{ display:flex; flex-direction:column; gap:6px; margin-top:4px; }
+.setups-actions > .btn{ text-align:left; }
+.setups-actions .btn[hidden], #setups-save-form[hidden], #share-url[hidden]{ display:none; }
+.btn:disabled{ opacity:.45; cursor:not-allowed; border-color: var(--border); }
+
+.setup-row{ display:flex; align-items:center; gap:6px; padding:2px 0; }
+.setup-row.confirming{ flex-wrap:wrap; background: rgba(224,85,95,.08); border-radius: var(--radius); padding:6px; }
+.setup-load{
+  flex:1; min-width:0;
+  display:flex; align-items:baseline; justify-content:space-between; gap:8px;
+  background: var(--panel-alt);
+  border:1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  padding:7px 10px;
+  font-size:13px;
+  text-align:left;
+}
+.setup-load:hover{ border-color: var(--accent); }
+.setup-load:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+.setup-name{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
+.setup-count{ flex-shrink:0; font-size:11.5px; color: var(--text-dim); }
+.setup-row .icon-btn{ flex-shrink:0; }
+.setup-confirm-text{ flex:1 1 100%; overflow-wrap:anywhere; }
+.setup-rename, #setups-save-form{ display:flex; gap:6px; flex:1; min-width:0; }
+.setup-rename input, #setups-save-form input, #share-url{
+  flex:1; min-width:0;
+  background: var(--panel-alt);
+  border:1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding:6px 8px;
+  font-size:13px;
+  outline:none;
+}
+.setup-rename input:focus, #setups-save-form input:focus, #share-url:focus{ border-color: var(--accent); }
+#share-url{ font-family: var(--mono); font-size:11.5px; }
+.btn-danger{ background: var(--danger); border-color: var(--danger); color:#fff; font-weight:600; }
+.btn-danger:hover{ background: var(--danger-hover); border-color: var(--danger-hover); }
+
+#shared-bar{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  flex-shrink:0;
+  padding:4px 16px;
+  background: rgba(242,169,59,.10);
+  border-bottom:1px solid rgba(242,169,59,.35);
+  font-size:12.5px;
+  color: var(--text);
+}
+#shared-bar[hidden]{ display:none; }
+#shared-bar .btn{ font-size:12px; padding:3px 10px; }
+@media (max-width: 699px){
+  #shared-bar{ padding:4px 10px; }
+  #setups-menu{ position:fixed; left:8px; right:8px; width:auto; max-width:none; }
+}
+
+/* =====================================================================
+   AGREGAR DE MIS SEGUIDOS (ronda 3b)
+   ===================================================================== */
+#follows-wrap{ position:relative; }
+#follows-btn{ font-size:12.5px; white-space:nowrap; }
+#follows-btn.active{ border-color: var(--accent); color: var(--accent); }
+#follows-menu{
+  position:absolute;
+  top:calc(100% + 6px);
+  left:0;
+  z-index:500;
+  width:340px;
+  max-width:calc(100vw - 16px);
+  max-height:70vh;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  background: var(--panel);
+  border:1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  padding:8px;
+  color: var(--text);
+  font-size:13px;
+}
+#follows-menu[hidden], #follows-search[hidden], #follows-retry[hidden]{ display:none; }
+#follows-menu .setups-head{ padding-bottom:2px; }
+#follows-search{
+  background: var(--panel-alt);
+  border:1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius);
+  padding:6px 8px;
+  font-size:13px;
+  outline:none;
+}
+#follows-search:focus{ border-color: var(--accent); }
+#follows-retry{ align-self:flex-start; }
+#follows-list{
+  flex:1 1 auto;
+  min-height:0;
+  overflow-y:auto;
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+}
+#follows-list:empty{ display:none; }
+.follow-row{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:5px 6px;
+  border-radius: var(--radius);
+  cursor:pointer;
+}
+.follow-row:hover{ background: var(--panel-alt); }
+.follow-row:focus-within{ outline:2px solid var(--accent); outline-offset:-2px; }
+.follow-row input{ margin:0; accent-color: var(--accent); flex-shrink:0; }
+.follow-row.is-added{ cursor:default; opacity:.6; }
+.follow-dot{ width:7px; height:7px; border-radius:50%; flex-shrink:0; background:transparent; }
+.follow-row.is-live .follow-dot{ background:#ff2d3a; box-shadow:0 0 0 2px rgba(255,45,58,.25); }
+.follow-name{ flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.follow-row.is-live .follow-name{ font-weight:600; }
+.follow-viewers{ flex-shrink:0; font-size:11.5px; color:#ff4d57; font-variant-numeric: tabular-nums; }
+.follow-added{ flex-shrink:0; font-size:11px; color: var(--text-dim); }
+.follows-footer{ display:flex; align-items:center; justify-content:space-between; gap:8px; border-top:1px solid var(--border); padding-top:8px; }
+.follows-footer .setups-note{ padding:0; }
+@media (max-width: 699px){
+  #follows-menu{ position:fixed; left:8px; right:8px; width:auto; max-width:none; }
+}
+
+/* =====================================================================
+   RONDA 3c — rediseño: barra en una fila, controles del tile al pasar
+   el mouse, flechas en las pestañas del chat, anillos de foco
+   ===================================================================== */
+
+/* el atributo hidden siempre gana (los .btn ahora son inline-flex) */
+[hidden]{ display:none !important; }
+
+/* ---- anillos de foco para teclado (los inputs ya marcan el borde) ---- */
+.icon-btn:focus-visible,
+.chat-tab:focus-visible,
+.tabs-arrow:focus-visible,
+#chat-new-pill:focus-visible,
+.chat-msg .msg-channel:focus-visible,
+#layout-controls select:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+
+/* ---- barra superior ---- */
+#topbar .btn,
+#layout-controls select,
+#add-form input[type="text"]{
+  height:32px;
+}
+#topbar .btn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  white-space:nowrap;
+}
+#layout-controls select{ padding:0 6px; }
+/* dentro de los menús los botones vuelven a su tamaño y alineación normal */
+#setups-menu .btn, #follows-menu .btn{ height:auto; min-height:32px; }
+#setups-menu .setups-actions > .btn{ justify-content:flex-start; }
+.btn-ico{ font-size:12px; line-height:1; display:inline-flex; }
+.btn-ico svg{ display:block; }
+.btn-icon{ width:32px; padding:0 !important; }
+.btn-icon svg{ display:block; }
+#hide-offline-btn:not(.active){ color: var(--text-dim); }
+#hide-offline-btn:not(.active):hover{ color: var(--text); }
+#login-btn .twitch-glyph{ color:#bf94ff; flex-shrink:0; }
+#user-chip{ height:32px; padding:4px 4px 4px 12px; }
+#user-name{ max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#auth-area{ gap:8px; }
+.setups-subhead{ padding:0 4px 2px; }
+
+/* tooltip propio (más rápido que title) */
+[data-tip]{ position:relative; }
+[data-tip]::after{
+  content:attr(data-tip);
+  position:absolute;
+  top:calc(100% + 8px);
+  right:0;
+  z-index:600;
+  background:#050608;
+  color: var(--text);
+  border:1px solid var(--border);
+  border-radius: var(--radius);
+  padding:5px 8px;
+  font-size:12px;
+  font-weight:500;
+  white-space:nowrap;
+  pointer-events:none;
+  box-shadow:0 6px 18px rgba(0,0,0,.45);
+  opacity:0;
+  visibility:hidden;
+  transition:opacity .1s;
+}
+[data-tip]:focus-visible::after{ opacity:1; visibility:visible; }
+@media (hover:hover){
+  [data-tip]:hover::after{ opacity:1; visibility:visible; transition-delay:.35s; }
+}
+[data-tip][aria-expanded="true"]::after{ display:none; }
+
+/* pantallas medianas: etiquetas cortas para seguir en una fila */
+@media (max-width: 1279px){
+  #layout-controls label{ position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+  #setups-btn .btn-lbl, #chat-panel-toggle .btn-lbl{ display:none; }
+  #setups-btn, #chat-panel-toggle{ width:32px; padding:0; }
+  #follows-btn{ font-size:0; gap:0; }
+  #follows-btn::after{ content:attr(data-short); font-size:12.5px; }
+}
+/* angostas: fila 1 = logo + controles + sesión, fila 2 = agregar canal */
+@media (max-width: 959px){
+  #topbar{ gap:8px; }
+  #add-group{ order:10; flex:1 1 100%; }
+  #add-form{ flex:1 1 auto; min-width:0; }
+  #add-form input[type="text"]{ flex:1 1 auto; width:auto; }
+}
+@media (max-width: 699px){
+  #topbar{ padding:8px; }
+  #topbar h1 span{ display:none; }
+  #layout-controls{ gap:6px; flex-wrap:nowrap; }
+  #add-form .btn{ padding:0 10px; }
+  #login-btn{ padding:0 10px; }
+  #login-btn .btn-lbl{ font-size:0; }
+  #login-btn .btn-lbl::after{ content:attr(data-short); font-size:12.5px; }
+  #topbar h1{ font-size:14px; }
+  #layout-controls{ gap:4px; }
+  #user-chip{ padding:4px 2px 4px 8px; gap:6px; }
+  #user-name{ max-width:56px; }
+  #logout-btn{ width:22px; height:22px; }
+  #add-error{ white-space:normal; right:0; }
+}
+
+/* ---- tiles: encabezado delgado, controles al pasar el mouse ---- */
+.tile-header{ padding:4px 8px; gap:8px; min-height:31px; }
+.tile-controls{
+  display:flex;
+  align-items:center;
+  gap:4px;
+  flex-shrink:0;
+  margin-left:auto;
+}
+.tile-controls .icon-btn{ width:22px; height:22px; font-size:12px; }
+.tile-controls .speaker-btn{ width:auto; min-width:22px; }
+.tile-controls .focus-btn{ width:auto; }
+.chat-btn svg{ display:block; }
+.speaker-btn.armed{ background: var(--panel-alt); }
+
+@media (hover:hover){
+  .tile-controls{
+    position:absolute;
+    top:0;
+    right:0;
+    bottom:0;
+    z-index:1;
+    padding:0 8px 0 32px;
+  }
+  /* degradado que tapa el final del título solo mientras se ven */
+  .tile-controls::before{
+    content:"";
+    position:absolute;
+    inset:0;
+    z-index:-1;
+    background:linear-gradient(to right, rgba(27,30,37,0), var(--panel-alt) 28px);
+    opacity:0;
+    transition:opacity .12s;
+  }
+  .tile-controls > *{ opacity:0; transition:opacity .12s; }
+  .tile:hover .tile-controls::before,
+  .tile:hover .tile-controls > *,
+  .tile-header:has(:focus-visible) .tile-controls::before,
+  .tile-header:has(:focus-visible) .tile-controls > *,
+  .tile.dragging .tile-controls > *{ opacity:1; }
+
+  /* orden en escritorio: ⠿ ⤢ 💬 [volumen 🔊] × — el audio queda junto a
+     la ×, así su botón no se mueve al aparecer los demás controles */
+  .tile-controls .drag-handle{ order:0; }
+  .tile-controls .focus-btn{ order:1; }
+  .tile-controls .chat-btn{ order:2; }
+  .tile-controls .tile-audio{ order:3; flex-direction:row-reverse; }
+  .tile-controls .remove{ order:4; }
+  /* el volumen reserva su lugar (no empuja el botón al aparecer) */
+  .tile-controls .vol-slider{ display:block; visibility:hidden; }
+  .tile:hover .tile-controls .vol-slider,
+  .tile-audio:has(:focus-visible) .vol-slider{ visibility:visible; }
+
+  /* el audio activo (o "toca para activar") queda siempre a la vista, en
+     su mismo lugar; el título le deja ese espacio */
+  .tile-controls .tile-audio:has(.speaker-btn.active, .speaker-btn.armed){ opacity:1; }
+  .tile-header:has(.speaker-btn.active){ padding-right:68px; }
+  .tile-header:has(.speaker-btn.armed){ padding-right:176px; }
+}
+@container (max-width: 300px){
+  .tile-header:has(.speaker-btn.armed){ padding-right:136px; }
+}
+@container (max-width: 230px){
+  .tile-header:has(.speaker-btn.armed){ padding-right:64px; }
+}
+/* táctil: siempre visibles, en la misma fila */
+@media (hover:none){
+  .tile-controls{ position:static; }
+}
+
+/* ---- pestañas del chat: flechas + degradado cuando no caben ---- */
+#chat-tabs-wrap{
+  position:relative;
+  flex-shrink:0;
+  background: var(--panel-alt);
+  border-bottom:1px solid var(--border);
+}
+#chat-tabs{
+  background:none;
+  border-bottom:0;
+  padding:8px;
+  scrollbar-width:none;
+  --fl:0px;
+  --fr:0px;
+  -webkit-mask-image:linear-gradient(to right, transparent 0, #000 var(--fl), #000 calc(100% - var(--fr)), transparent 100%);
+          mask-image:linear-gradient(to right, transparent 0, #000 var(--fl), #000 calc(100% - var(--fr)), transparent 100%);
+}
+#chat-tabs::-webkit-scrollbar{ display:none; }
+#chat-tabs-wrap.can-left #chat-tabs{ --fl:44px; }
+#chat-tabs-wrap.can-right #chat-tabs{ --fr:44px; }
+.tabs-arrow{
+  position:absolute;
+  top:50%;
+  transform:translateY(-50%);
+  z-index:2;
+  width:26px;
+  height:26px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:0 0 2px;
+  background: var(--panel);
+  border:1px solid var(--border);
+  border-radius:50%;
+  color: var(--text);
+  font-size:18px;
+  line-height:1;
+  box-shadow:0 2px 8px rgba(0,0,0,.5);
+}
+.tabs-arrow:hover{ border-color: var(--accent); color: var(--accent); }
+.tabs-arrow.left{ left:4px; }
+.tabs-arrow.right{ right:4px; }
+.tabs-arrow[hidden]{ display:none; }
+
+/* ---- espaciado de 8 px ---- */
+#main{ padding:8px; }
+@media (max-width: 699px){
+  #main{ padding:8px; }
+}
+
+/* los encabezados angostos vuelven a apretar el espaciado (van después
+   del encabezado delgado de arriba para ganarle) */
+@container (max-width: 420px){
+  .tile-controls .focus-btn{ font-size:0; padding:0; width:22px; }
+}
+@container (max-width: 300px){
+  .tile-header{ gap:5px; padding:4px 5px; }
+}
+@container (max-width: 230px){
+  .tile-header{ gap:4px; }
+  .tile-controls{ gap:3px; }
 }
