@@ -2,13 +2,13 @@
   "use strict";
 
   /* =====================================================================
-     CONFIGURACIÓN — editar estas dos constantes con tus propios datos
-     de la app registrada en https://dev.twitch.tv/console
+     CONFIGURACIÓN — edita estas dos constantes con los datos de tu app
+     registrada en https://dev.twitch.tv/console
 
      - CLIENT_ID: el Client ID de tu app de Twitch.
      - REDIRECT_URI: debe ser EXACTAMENTE igual (incluyendo protocolo,
        sin barra final si no la pusiste al registrar) a la URL donde
-       vas a servir esta página en GitHub Pages, por ejemplo:
+       sirves esta página en GitHub Pages, por ejemplo:
        "https://tu-usuario.github.io/tu-repo/"
        y tiene que estar dada de alta tal cual en el panel de Twitch
        en "OAuth Redirect URLs".
@@ -16,18 +16,30 @@
   const CLIENT_ID = "m13brzygevbk4qrnhg32eimd6awkvc";
   const REDIRECT_URI = window.location.origin + window.location.pathname;
 
-  const OAUTH_SCOPES = "chat:read chat:edit";
+  // El IRC siempre es anónimo (solo lectura); para escribir se usa el chat
+  // nativo de Twitch de cada pestaña. "user:read:follows" prepara la
+  // lista de canales seguidos (ronda 3).
+  const OAUTH_SCOPES = "user:read:follows";
+
   const STORAGE_KEY = "twitch-multiview.channels";
   const LAYOUT_KEY_PREFIX = "twitch-multiview.layout.";
-  const SHARED_MODE_KEY = "twitch-multiview.sharedChatMode";
-  const SHARED_ACTIVE_KEY = "twitch-multiview.sharedChatActive";
-  const UNIFIED_MODE_KEY = "twitch-multiview.unifiedChatMode";
-  const DEFAULT_SHARED_CHAT_WIDTH = 340;
-  const DEFAULT_SHARED_CHAT_HEIGHT_MOBILE = 260;
+  const AUTH_KEY = "twitch-multiview.auth";
+  const OAUTH_STATE_KEY = "twitch-multiview.oauthState";   // sessionStorage
+  const CHAT_OPEN_KEY = "twitch-multiview.chatPanelOpen";
+  const CHAT_TAB_KEY = "twitch-multiview.chatTab";
+  // Claves de versiones anteriores (chat por tile / compartido / unificado).
+  const OLD_KEYS = [
+    "twitch-multiview.sharedChatMode",
+    "twitch-multiview.sharedChatActive",
+    "twitch-multiview.unifiedChatMode"
+  ];
 
-  const DEFAULT_CHAT_WIDTH = 300;   // px, panel de chat cuando el video y el chat están lado a lado
-  const DEFAULT_CHAT_HEIGHT = 240;  // px, panel de chat cuando están apilados (pantallas angostas)
-  const NARROW_BREAKPOINT = 700;    // px
+  const DEFAULT_CHAT_PANEL_WIDTH = 340;          // px, panel a la derecha del grid
+  const DEFAULT_CHAT_PANEL_HEIGHT_MOBILE = 260;  // px, panel debajo del grid
+  const NARROW_BREAKPOINT = 700;                 // px
+
+  const ALL_TAB = "__all__";
+  const MAX_MESSAGES = 500;
 
   // Dominio actual, exigido por Twitch como parámetro "parent" en los
   // embeds. Si la página corriera desde un archivo local (file://) o sin
@@ -37,50 +49,25 @@
   /* =====================================================================
      ESTADO
      ===================================================================== */
-  // channels: [{ name, chatOpen, chatWidth, chatHeightMobile }]
+  // channels: [{ name }]
   let channels = loadChannels();
 
   // Preferencias de layout — se guardan por resolución de pantalla, así
   // que cada monitor (ej. 1080p vs 1440p) recuerda su propio acomodo.
   let layoutPrefs = loadLayoutPrefs();
 
-  // Chat compartido: se ve el chat NATIVO de Twitch (iframe) de un canal
-  // a la vez —así se ven bien los emotes, badges y menciones—, y se
-  // cambia de canal con el selector. Para escribir se usa el input
-  // nativo del propio iframe de Twitch (no hay input propio acá).
-  let sharedChatMode = loadSharedChatMode();
-  let sharedChatActive = null;
-  try{ sharedChatActive = localStorage.getItem(SHARED_ACTIVE_KEY) || null; }catch(e){ sharedChatActive = null; }
+  // Panel de chat único: pestaña "Todos" (feed IRC mezclado, solo lectura)
+  // + una pestaña por canal con el chat NATIVO de Twitch (ahí se escribe).
+  let chatPanelOpen = loadChatPanelOpen();
+  let activeTab = ALL_TAB;
+  try{ activeTab = localStorage.getItem(CHAT_TAB_KEY) || ALL_TAB; }catch(e){ activeTab = ALL_TAB; }
 
-  // Chat unificado: una tile OPCIONAL dentro del grid (independiente del
-  // panel de chat compartido de arriba) que muestra un único feed con los
-  // mensajes de todos los canales mezclados, leídos por IRC. Convive con
-  // el chat compartido — ambos pueden estar activos a la vez.
-  let unifiedChatMode = loadUnifiedChatMode();
+  // iframes de chat nativo ya creados (se ocultan, no se destruyen, para
+  // que cambiar de pestaña sea instantáneo). name -> iframe
+  const chatFrames = new Map();
 
-  // Qué canales se muestran en el feed unificado (filtro de lectura) y a
-  // cuáles se les manda el mensaje al escribir ahí (destino de envío).
-  // Ambos viven solo en memoria.
-  let unifiedVisibleChannels = new Set(channels.map(c => c.name));
-  let unifiedSendTargets = new Set(channels.map(c => c.name));
-
-  // Mensajes recibidos por IRC, mezclados de todos los canales.
-  let chatMessages = [];
-  let msgIdCounter = 0;
-  const MAX_MESSAGES = 300;
-
-  // Referencias a los elementos vivos de la tile de chat unificado (se
-  // reasignan cada vez que se reconstruye el grid en renderChannels()).
-  let unifiedChatMessagesEl = null;
-  let unifiedChatSendInputEl = null;
-  let unifiedChatSendBtnEl = null;
-
-  // Referencias a los elementos de chat de cada tile YA existente en el
-  // DOM (se llenan en buildTile). Permiten actualizar solo lo relacionado
-  // al chat (mostrar/ocultar panel, estado del botón 💬) sin reconstruir
-  // el grid entero — y sin recargar los iframes de video — al activar o
-  // desactivar el chat compartido.
-  let tileRegistry = [];
+  // El feed "Todos" sigue el final salvo que el usuario haya subido.
+  let feedFollow = true;
 
   const CHANNEL_PALETTE = ["#f2a93b","#5aa9e6","#7ed6a5","#e07be0","#ff8a65","#8d9eff","#ffd54f","#4dd0e1"];
   function channelColor(name){
@@ -89,14 +76,31 @@
     return CHANNEL_PALETTE[hash % CHANNEL_PALETTE.length];
   }
 
-  // Estado de autenticación — SOLO EN MEMORIA, nunca en localStorage.
+  // Autenticación — el token y su vencimiento se guardan en localStorage
+  // (clave twitch-multiview.auth) para sobrevivir a la recarga; al cargar
+  // se valida con id.twitch.tv/oauth2/validate y se borra si no sirve.
   let authToken = null;
   let authUsername = null;
+  let authValidateTimer = null;
+
+  // IRC anónimo (justinfanXXXXX) para el feed "Todos".
   let ircSocket = null;
   let ircConnected = false;
+  let ircWantOpen = false;
+  let ircReconnectTimer = null;
+  let ircReconnectDelay = 2000;
+
+  // Emotes de terceros y badges.
+  const roomIds = new Map();          // canal -> room-id
+  const channelEmotes = new Map();    // canal -> { stv: Map, bttv: Map, ffz: Map }
+  const globalEmotes = { stv: new Map(), bttv: new Map(), ffz: new Map() };
+  let globalEmotesRequested = false;
+  const globalBadges = new Map();     // "set/version" -> url
+  const channelBadges = new Map();    // canal -> Map("set/version" -> url)
+  let globalBadgesRequested = false;
 
   /* =====================================================================
-     PERSISTENCIA — canales (nunca el token)
+     PERSISTENCIA — canales
      ===================================================================== */
   function loadChannels(){
     try{
@@ -104,14 +108,11 @@
       if(!raw) return [];
       const parsed = JSON.parse(raw);
       if(!Array.isArray(parsed)) return [];
+      const seen = new Set();
       return parsed
         .filter(c => c && typeof c.name === "string")
-        .map(c => ({
-          name: c.name.toLowerCase(),
-          chatOpen: !!c.chatOpen,
-          chatWidth: typeof c.chatWidth === "number" ? c.chatWidth : null,
-          chatHeightMobile: typeof c.chatHeightMobile === "number" ? c.chatHeightMobile : null
-        }));
+        .map(c => ({ name: c.name.toLowerCase() }))
+        .filter(c => /^[a-z0-9_]{2,25}$/.test(c.name) && !seen.has(c.name) && seen.add(c.name));
     }catch(e){
       console.warn("No se pudo leer la lista de canales guardada:", e);
       return [];
@@ -120,7 +121,7 @@
 
   function saveChannels(){
     try{
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(channels));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(channels.map(c => ({ name: c.name }))));
     }catch(e){
       console.warn("No se pudo guardar la lista de canales:", e);
     }
@@ -135,30 +136,32 @@
       : "default";
   }
 
-  function loadLayoutPrefs(){
-    const fallback = {
+  function defaultLayoutPrefs(){
+    return {
       colsOverride: null,
       colFr: null,
       rowFr: null,
       dimsKey: null,
-      chatWidth: DEFAULT_CHAT_WIDTH,
-      chatHeightMobile: DEFAULT_CHAT_HEIGHT,
-      sharedChatWidth: DEFAULT_SHARED_CHAT_WIDTH,
-      sharedChatHeightMobile: DEFAULT_SHARED_CHAT_HEIGHT_MOBILE
+      chatPanelWidth: DEFAULT_CHAT_PANEL_WIDTH,
+      chatPanelHeightMobile: DEFAULT_CHAT_PANEL_HEIGHT_MOBILE
     };
+  }
+
+  function loadLayoutPrefs(){
+    const fallback = defaultLayoutPrefs();
     try{
       const raw = localStorage.getItem(LAYOUT_KEY_PREFIX + getScreenKey());
       if(!raw) return fallback;
       const parsed = JSON.parse(raw);
+      const num = (v) => typeof v === "number" && isFinite(v) ? v : null;
       return {
-        colsOverride: (typeof parsed.colsOverride === "number") ? parsed.colsOverride : null,
+        colsOverride: num(parsed.colsOverride),
         colFr: Array.isArray(parsed.colFr) ? parsed.colFr : null,
         rowFr: Array.isArray(parsed.rowFr) ? parsed.rowFr : null,
         dimsKey: parsed.dimsKey || null,
-        chatWidth: typeof parsed.chatWidth === "number" ? parsed.chatWidth : DEFAULT_CHAT_WIDTH,
-        chatHeightMobile: typeof parsed.chatHeightMobile === "number" ? parsed.chatHeightMobile : DEFAULT_CHAT_HEIGHT,
-        sharedChatWidth: typeof parsed.sharedChatWidth === "number" ? parsed.sharedChatWidth : DEFAULT_SHARED_CHAT_WIDTH,
-        sharedChatHeightMobile: typeof parsed.sharedChatHeightMobile === "number" ? parsed.sharedChatHeightMobile : DEFAULT_SHARED_CHAT_HEIGHT_MOBILE
+        // se acepta el tamaño del viejo "chat compartido" como punto de partida
+        chatPanelWidth: num(parsed.chatPanelWidth) || num(parsed.sharedChatWidth) || DEFAULT_CHAT_PANEL_WIDTH,
+        chatPanelHeightMobile: num(parsed.chatPanelHeightMobile) || num(parsed.sharedChatHeightMobile) || DEFAULT_CHAT_PANEL_HEIGHT_MOBILE
       };
     }catch(e){
       console.warn("No se pudo leer las preferencias de layout:", e);
@@ -174,26 +177,21 @@
     }
   }
 
-  function loadSharedChatMode(){
-    try{ return localStorage.getItem(SHARED_MODE_KEY) === "1"; }
-    catch(e){ return false; }
+  function loadChatPanelOpen(){
+    try{ return localStorage.getItem(CHAT_OPEN_KEY) !== "0"; }
+    catch(e){ return true; }
   }
-  function saveSharedChatMode(){
-    try{ localStorage.setItem(SHARED_MODE_KEY, sharedChatMode ? "1" : "0"); }
+  function saveChatPanelOpen(){
+    try{ localStorage.setItem(CHAT_OPEN_KEY, chatPanelOpen ? "1" : "0"); }
     catch(e){ /* noop */ }
   }
-  function saveSharedChatActive(){
-    try{
-      if(sharedChatActive) localStorage.setItem(SHARED_ACTIVE_KEY, sharedChatActive);
-      else localStorage.removeItem(SHARED_ACTIVE_KEY);
-    }catch(e){ /* noop */ }
+  function saveActiveTab(){
+    try{ localStorage.setItem(CHAT_TAB_KEY, activeTab); }
+    catch(e){ /* noop */ }
   }
-  function loadUnifiedChatMode(){
-    try{ return localStorage.getItem(UNIFIED_MODE_KEY) === "1"; }
-    catch(e){ return false; }
-  }
-  function saveUnifiedChatMode(){
-    try{ localStorage.setItem(UNIFIED_MODE_KEY, unifiedChatMode ? "1" : "0"); }
+
+  function cleanupOldStorage(){
+    try{ OLD_KEYS.forEach(k => localStorage.removeItem(k)); }
     catch(e){ /* noop */ }
   }
 
@@ -216,12 +214,15 @@
   const resetLayoutBtn = document.getElementById("reset-layout-btn");
   const dragOverlay = document.getElementById("drag-overlay");
 
-  const sharedChatToggleBtn = document.getElementById("shared-chat-toggle");
-  const unifiedChatToggleBtn = document.getElementById("unified-chat-toggle");
-  const sharedChatEl = document.getElementById("shared-chat");
-  const sharedChatResizerEl = document.getElementById("shared-chat-resizer");
-  const sharedChatSelectEl = document.getElementById("shared-chat-select");
-  const sharedChatFrameWrapEl = document.getElementById("shared-chat-frame-wrap");
+  const chatPanelToggleBtn = document.getElementById("chat-panel-toggle");
+  const chatPanelEl = document.getElementById("chat-panel");
+  const chatResizerEl = document.getElementById("chat-resizer");
+  const chatTabsEl = document.getElementById("chat-tabs");
+  const chatFeedWrapEl = document.getElementById("chat-feed-wrap");
+  const chatFeedEl = document.getElementById("chat-feed");
+  const chatFeedEmptyEl = document.getElementById("chat-feed-empty");
+  const chatNewPillEl = document.getElementById("chat-new-pill");
+  const chatFramesEl = document.getElementById("chat-frames");
 
   /* =====================================================================
      VALIDACIÓN DE NOMBRES DE CANAL
@@ -275,8 +276,8 @@
   }
 
   function applyGridTemplate(dims){
-    grid.style.gridTemplateColumns = layoutPrefs.colFr.map(f => f.toFixed(4) + "fr").join(" ");
-    grid.style.gridTemplateRows = layoutPrefs.rowFr.map(f => f.toFixed(4) + "fr").join(" ");
+    grid.style.gridTemplateColumns = layoutPrefs.colFr.map(f => Number(f).toFixed(4) + "fr").join(" ");
+    grid.style.gridTemplateRows = layoutPrefs.rowFr.map(f => Number(f).toFixed(4) + "fr").join(" ");
   }
 
   function clearGridHandles(){
@@ -383,12 +384,10 @@
   }
 
   function updateGridLayout(){
-    // la tile de chat unificado cuenta como una tile más para el cálculo
-    // de columnas/filas del grid, igual que un canal cualquiera.
-    const n = channels.length + (unifiedChatMode && channels.length > 0 ? 1 : 0);
+    const n = channels.length;
     clearGridHandles();
 
-    if(channels.length === 0){
+    if(n === 0){
       grid.style.display = "none";
       emptyState.style.display = "block";
       return;
@@ -400,7 +399,7 @@
 
     if(dims.narrow){
       grid.style.gridTemplateColumns = "1fr";
-      grid.style.gridTemplateRows = `repeat(${n}, minmax(240px, 1fr))`;
+      grid.style.gridTemplateRows = `repeat(${n}, minmax(200px, 1fr))`;
       return;
     }
 
@@ -410,502 +409,445 @@
   }
 
   window.addEventListener("resize", () => {
+    applyChatPanelSize();
     updateGridLayout();
-    if(sharedChatMode) applySharedChatWidth();
   });
 
   /* =====================================================================
-     CHAT COMPARTIDO
+     PANEL DE CHAT (pestañas: Todos + un chat nativo por canal)
      ===================================================================== */
-  function applySharedChatWidth(){
+  function applyChatPanelSize(){
     if(isNarrow()){
-      sharedChatEl.style.width = "";
-      sharedChatEl.style.height = (layoutPrefs.sharedChatHeightMobile || DEFAULT_SHARED_CHAT_HEIGHT_MOBILE) + "px";
+      chatPanelEl.style.width = "";
+      chatPanelEl.style.height = (layoutPrefs.chatPanelHeightMobile || DEFAULT_CHAT_PANEL_HEIGHT_MOBILE) + "px";
     }else{
-      sharedChatEl.style.height = "";
-      sharedChatEl.style.width = (layoutPrefs.sharedChatWidth || DEFAULT_SHARED_CHAT_WIDTH) + "px";
+      chatPanelEl.style.height = "";
+      chatPanelEl.style.width = (layoutPrefs.chatPanelWidth || DEFAULT_CHAT_PANEL_WIDTH) + "px";
     }
   }
 
-  // Actualiza el botón 💬 y el panel de chat propio de cada tile YA
-  // existente en el DOM, sin reconstruir nada — así activar/desactivar
-  // el chat compartido no recarga los iframes de video ni los de chat.
-  function updateTileChatVisibility(){
-    tileRegistry.forEach(ref => {
-      const ch = channels.find(c => c.name === ref.name);
-      if(!ch) return;
-      const chatToggleIsActive = sharedChatMode ? (sharedChatActive === ch.name) : ch.chatOpen;
-      ref.chatToggle.classList.toggle("active", chatToggleIsActive);
-      ref.chatToggle.title = sharedChatMode
-        ? "Ver el chat de este canal en el panel compartido"
-        : "Mostrar / ocultar chat";
-      const showOwnChat = !sharedChatMode && ch.chatOpen;
-      ref.chatPanel.classList.toggle("hidden", !showOwnChat);
-      ref.resizer.hidden = !showOwnChat;
-    });
+  function applyChatPanelOpen(){
+    chatPanelToggleBtn.classList.toggle("active", chatPanelOpen);
+    chatPanelEl.hidden = !chatPanelOpen;
+    chatResizerEl.hidden = !chatPanelOpen;
+    applyChatPanelSize();
+    updateGridLayout();
+    if(chatPanelOpen && activeTab === ALL_TAB && feedFollow) scrollFeedToBottom();
   }
 
-  /* ---- dropdown reutilizable con checkboxes (filtro de lectura / destino de envío) ---- */
-  function closeDropdowns(){
-    document.querySelectorAll(".chat-dropdown-menu").forEach(m => { m.hidden = true; });
-    document.querySelectorAll(".chat-dropdown-btn").forEach(b => b.classList.remove("open"));
-  }
-  document.addEventListener("click", closeDropdowns);
+  chatPanelToggleBtn.addEventListener("click", () => {
+    chatPanelOpen = !chatPanelOpen;
+    saveChatPanelOpen();
+    applyChatPanelOpen();
+  });
 
-  function summaryLabel(selectedSet, total){
-    if(total === 0) return "—";
-    if(selectedSet.size === 0) return "Ninguno";
-    if(selectedSet.size === total) return "Todos";
-    if(selectedSet.size === 1) return [...selectedSet][0];
-    return selectedSet.size + " canales";
-  }
+  function renderChatTabs(){
+    chatTabsEl.textContent = "";
 
-  function buildDropdown(containerEl, label, selectedSet, onChange){
-    containerEl.innerHTML = "";
-    if(channels.length === 0) return;
-
-    const wrap = document.createElement("div");
-    wrap.className = "chat-dropdown";
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "chat-dropdown-btn";
-
-    const btnLabel = document.createElement("span");
-    btnLabel.className = "dd-label";
-    btnLabel.textContent = label + ":";
-
-    const btnValue = document.createElement("span");
-    btnValue.className = "dd-value";
-    btnValue.textContent = summaryLabel(selectedSet, channels.length);
-
-    const caret = document.createElement("span");
-    caret.className = "dd-caret";
-    caret.textContent = "▾";
-
-    btn.appendChild(btnLabel);
-    btn.appendChild(btnValue);
-    btn.appendChild(caret);
-
-    const menu = document.createElement("div");
-    menu.className = "chat-dropdown-menu";
-    menu.hidden = true;
-    menu.addEventListener("click", e => e.stopPropagation());
-
-    function syncAllCheckbox(){
-      allCb.checked = selectedSet.size === channels.length;
-      allCb.indeterminate = selectedSet.size > 0 && selectedSet.size < channels.length;
-    }
-
-    const allRow = document.createElement("label");
-    allRow.className = "dropdown-item dropdown-item-all";
-    const allCb = document.createElement("input");
-    allCb.type = "checkbox";
-    allCb.addEventListener("change", () => {
-      if(allCb.checked) channels.forEach(c => selectedSet.add(c.name));
-      else selectedSet.clear();
-      menu.querySelectorAll("input[data-channel]").forEach(cb => {
-        cb.checked = selectedSet.has(cb.dataset.channel);
-      });
-      btnValue.textContent = summaryLabel(selectedSet, channels.length);
-      onChange();
-    });
-    allRow.appendChild(allCb);
-    allRow.appendChild(document.createTextNode("Todos"));
-    menu.appendChild(allRow);
+    const allBtn = document.createElement("button");
+    allBtn.type = "button";
+    allBtn.className = "chat-tab";
+    allBtn.dataset.tab = ALL_TAB;
+    allBtn.textContent = "Todos";
+    allBtn.title = "Mensajes de todos los canales mezclados (solo lectura)";
+    allBtn.addEventListener("click", () => selectTab(ALL_TAB));
+    chatTabsEl.appendChild(allBtn);
 
     channels.forEach(ch => {
-      const row = document.createElement("label");
-      row.className = "dropdown-item";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.dataset.channel = ch.name;
-      cb.checked = selectedSet.has(ch.name);
-      cb.addEventListener("change", () => {
-        if(cb.checked) selectedSet.add(ch.name);
-        else selectedSet.delete(ch.name);
-        syncAllCheckbox();
-        btnValue.textContent = summaryLabel(selectedSet, channels.length);
-        onChange();
-      });
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chat-tab";
+      btn.dataset.tab = ch.name;
+      btn.title = "Chat de " + ch.name + " (aquí puedes escribir)";
       const dot = document.createElement("span");
       dot.className = "dd-dot";
       dot.style.background = channelColor(ch.name);
-      row.appendChild(cb);
-      row.appendChild(dot);
-      row.appendChild(document.createTextNode(ch.name));
-      menu.appendChild(row);
+      const label = document.createElement("span");
+      label.textContent = ch.name;
+      btn.appendChild(dot);
+      btn.appendChild(label);
+      btn.addEventListener("click", () => selectTab(ch.name));
+      chatTabsEl.appendChild(btn);
     });
 
-    syncAllCheckbox();
-
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const willOpen = menu.hidden;
-      closeDropdowns();
-      if(willOpen){
-        menu.hidden = false;
-        btn.classList.add("open");
+    // quitar iframes de canales que ya no están
+    Array.from(chatFrames.keys()).forEach(name => {
+      if(!channels.some(c => c.name === name)){
+        const f = chatFrames.get(name);
+        if(f) f.remove();
+        chatFrames.delete(name);
       }
     });
 
-    wrap.appendChild(btn);
-    wrap.appendChild(menu);
-    containerEl.appendChild(wrap);
+    selectTab(activeTab, true);
   }
 
-  /* ---- selector de un solo canal (cuál chat NATIVO se muestra) ---- */
-  function buildSingleSelectDropdown(containerEl, label, getActive, setActive, onChange){
-    containerEl.innerHTML = "";
-    if(channels.length === 0) return;
+  function selectTab(name, silent){
+    if(name !== ALL_TAB && !channels.some(c => c.name === name)) name = ALL_TAB;
+    activeTab = name;
+    if(!silent) saveActiveTab();
 
-    const wrap = document.createElement("div");
-    wrap.className = "chat-dropdown";
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "chat-dropdown-btn";
-
-    const btnLabel = document.createElement("span");
-    btnLabel.className = "dd-label";
-    btnLabel.textContent = label + ":";
-
-    const btnValue = document.createElement("span");
-    btnValue.className = "dd-value";
-    btnValue.textContent = getActive() || "—";
-
-    const caret = document.createElement("span");
-    caret.className = "dd-caret";
-    caret.textContent = "▾";
-
-    btn.appendChild(btnLabel);
-    btn.appendChild(btnValue);
-    btn.appendChild(caret);
-
-    const menu = document.createElement("div");
-    menu.className = "chat-dropdown-menu";
-    menu.hidden = true;
-    menu.addEventListener("click", e => e.stopPropagation());
-
-    channels.forEach(ch => {
-      const row = document.createElement("label");
-      row.className = "dropdown-item";
-      const radio = document.createElement("input");
-      radio.type = "radio";
-      radio.name = "shared-chat-active-channel";
-      radio.checked = getActive() === ch.name;
-      radio.addEventListener("change", () => {
-        setActive(ch.name);
-        btnValue.textContent = ch.name;
-        closeDropdowns();
-        onChange();
-      });
-      const dot = document.createElement("span");
-      dot.className = "dd-dot";
-      dot.style.background = channelColor(ch.name);
-      row.appendChild(radio);
-      row.appendChild(dot);
-      row.appendChild(document.createTextNode(ch.name));
-      menu.appendChild(row);
+    chatTabsEl.querySelectorAll(".chat-tab").forEach(b => {
+      const on = b.dataset.tab === name;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+      if(on && !silent) b.scrollIntoView({ block: "nearest", inline: "nearest" });
     });
 
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const willOpen = menu.hidden;
-      closeDropdowns();
-      if(willOpen){
-        menu.hidden = false;
-        btn.classList.add("open");
-      }
-    });
+    const isAll = name === ALL_TAB;
+    chatFeedWrapEl.hidden = !isAll;
+    chatFramesEl.hidden = isAll;
 
-    wrap.appendChild(btn);
-    wrap.appendChild(menu);
-    containerEl.appendChild(wrap);
-  }
-
-  function renderChannelSelect(){
-    if(channels.length === 0){
-      sharedChatSelectEl.innerHTML = "";
-      return;
+    if(!isAll && !chatFrames.has(name)){
+      const iframe = document.createElement("iframe");
+      iframe.src = `https://www.twitch.tv/embed/${encodeURIComponent(name)}/chat?parent=${encodeURIComponent(PARENT)}&darkpopout`;
+      iframe.dataset.channel = name;
+      iframe.title = "Chat de " + name;
+      chatFramesEl.appendChild(iframe);
+      chatFrames.set(name, iframe);
     }
-    if(!sharedChatActive || !channels.some(c => c.name === sharedChatActive)){
-      sharedChatActive = channels[0].name;
-      saveSharedChatActive();
-    }
-    buildSingleSelectDropdown(
-      sharedChatSelectEl,
-      "Canal",
-      () => sharedChatActive,
-      (name) => {
-        sharedChatActive = name;
-        saveSharedChatActive();
-        grid.querySelectorAll('[data-role="chat-toggle"]').forEach(b => {
-          b.classList.toggle("active", b.dataset.channel === sharedChatActive);
-        });
-      },
-      renderSharedChatFrame
-    );
+    chatFrames.forEach((f, n) => { f.hidden = (n !== name); });
+
+    if(isAll && feedFollow) scrollFeedToBottom();
   }
 
-  function renderSharedChatFrame(){
-    sharedChatFrameWrapEl.innerHTML = "";
-    if(channels.length === 0){
-      const empty = document.createElement("div");
-      empty.id = "shared-chat-empty";
-      empty.textContent = "Agregá un canal para ver su chat acá.";
-      sharedChatFrameWrapEl.appendChild(empty);
-      return;
-    }
-    if(!sharedChatActive) return;
-    const iframe = document.createElement("iframe");
-    iframe.src = `https://www.twitch.tv/embed/${encodeURIComponent(sharedChatActive)}/chat?parent=${encodeURIComponent(PARENT)}&darkpopout`;
-    sharedChatFrameWrapEl.appendChild(iframe);
-  }
-
-  function renderSharedChatPanel(){
-    renderChannelSelect();
-    renderSharedChatFrame();
-  }
-
-  /* =====================================================================
-     CHAT UNIFICADO (tile opcional dentro del grid)
-     ===================================================================== */
-  function isUnifiedFeedScrolledToBottom(){
-    if(!unifiedChatMessagesEl) return true;
-    const el = unifiedChatMessagesEl;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-  }
-  function scrollUnifiedFeedToBottom(){
-    if(unifiedChatMessagesEl) unifiedChatMessagesEl.scrollTop = unifiedChatMessagesEl.scrollHeight;
-  }
-
-  function buildUnifiedMessageEl(m){
-    const div = document.createElement("div");
-    div.className = "chat-msg";
-
-    const chanTag = document.createElement("span");
-    chanTag.className = "msg-channel";
-    chanTag.textContent = m.channel;
-    chanTag.style.background = channelColor(m.channel);
-
-    const userSpan = document.createElement("span");
-    userSpan.className = "msg-user";
-    userSpan.textContent = m.user;
-    if(m.color) userSpan.style.color = m.color;
-
-    const textSpan = document.createElement("span");
-    textSpan.className = "msg-text";
-    textSpan.textContent = ": " + m.text;
-
-    div.appendChild(chanTag);
-    div.appendChild(userSpan);
-    div.appendChild(textSpan);
-    return div;
-  }
-
-  function renderUnifiedChatFeed(){
-    if(!unifiedChatMessagesEl) return;
-    if(channels.length === 0){
-      unifiedChatMessagesEl.innerHTML = "";
-      const empty = document.createElement("div");
-      empty.className = "unified-chat-empty";
-      empty.textContent = "Agregá un canal para ver sus mensajes acá.";
-      unifiedChatMessagesEl.appendChild(empty);
-      return;
-    }
-    const atBottom = isUnifiedFeedScrolledToBottom();
-    unifiedChatMessagesEl.innerHTML = "";
-    const visible = chatMessages.filter(m => unifiedVisibleChannels.has(m.channel));
-    if(visible.length === 0){
-      const empty = document.createElement("div");
-      empty.className = "unified-chat-empty";
-      empty.textContent = "Todavía no hay mensajes para mostrar acá.";
-      unifiedChatMessagesEl.appendChild(empty);
-      return;
-    }
-    visible.forEach(m => unifiedChatMessagesEl.appendChild(buildUnifiedMessageEl(m)));
-    if(atBottom) scrollUnifiedFeedToBottom();
-  }
-
-  function appendUnifiedMessageToFeed(m){
-    if(!unifiedChatMessagesEl) return;
-    if(!unifiedVisibleChannels.has(m.channel)) return;
-    const emptyEl = unifiedChatMessagesEl.querySelector(".unified-chat-empty");
-    if(emptyEl) unifiedChatMessagesEl.innerHTML = "";
-    const atBottom = isUnifiedFeedScrolledToBottom();
-    unifiedChatMessagesEl.appendChild(buildUnifiedMessageEl(m));
-    while(unifiedChatMessagesEl.children.length > MAX_MESSAGES){
-      unifiedChatMessagesEl.removeChild(unifiedChatMessagesEl.firstChild);
-    }
-    if(atBottom) scrollUnifiedFeedToBottom();
-  }
-
-  /* ---- construcción de la tile que se agrega al grid ---- */
-  function buildUnifiedChatTile(){
-    const tile = document.createElement("div");
-    tile.className = "tile unified-chat-tile";
-
-    const header = document.createElement("div");
-    header.className = "tile-header";
-
-    const nameEl = document.createElement("div");
-    nameEl.className = "tile-title";
-    nameEl.textContent = "🧩 Chat unificado";
-    nameEl.title = "Mensajes combinados de todos los canales";
-
-    const closeBtn = document.createElement("button");
-    closeBtn.className = "icon-btn remove";
-    closeBtn.title = "Cerrar chat unificado";
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", () => {
-      unifiedChatMode = false;
-      saveUnifiedChatMode();
-      unifiedChatToggleBtn.classList.remove("active");
-      if(!authToken) closeIrc();
-      tile.remove();
-      unifiedChatMessagesEl = null;
-      unifiedChatSendInputEl = null;
-      unifiedChatSendBtnEl = null;
-      updateGridLayout();
-    });
-
-    header.appendChild(nameEl);
-    header.appendChild(closeBtn);
-
-    const body = document.createElement("div");
-    body.className = "tile-body unified-chat-body";
-
-    const filtersRow = document.createElement("div");
-    filtersRow.className = "chat-dropdown-row unified-row-top";
-
-    const messagesEl = document.createElement("div");
-    messagesEl.className = "unified-chat-messages";
-
-    const targetsRow = document.createElement("div");
-    targetsRow.className = "chat-dropdown-row unified-row-bottom";
-
-    const sendForm = document.createElement("form");
-    sendForm.className = "chat-send-form";
-    const sendInput = document.createElement("input");
-    sendInput.type = "text";
-    sendInput.maxLength = 500;
-    const sendBtn = document.createElement("button");
-    sendBtn.type = "submit";
-    sendBtn.textContent = "➤";
-    sendForm.appendChild(sendInput);
-    sendForm.appendChild(sendBtn);
-
-    sendForm.addEventListener("submit", (e) => {
-      e.preventDefault();
-      const text = sendInput.value.trim();
-      if(!text || unifiedSendTargets.size === 0) return;
-      let anyOk = false;
-      unifiedSendTargets.forEach(name => { if(sendChatMessage(name, text)) anyOk = true; });
-      if(anyOk) sendInput.value = "";
-    });
-
-    body.appendChild(filtersRow);
-    body.appendChild(messagesEl);
-    body.appendChild(targetsRow);
-    body.appendChild(sendForm);
-
-    tile.appendChild(header);
-    tile.appendChild(body);
-
-    // referencias vivas, usadas por addChatMessage() y updateAllChatInputsState()
-    unifiedChatMessagesEl = messagesEl;
-    unifiedChatSendInputEl = sendInput;
-    unifiedChatSendBtnEl = sendBtn;
-
-    buildDropdown(filtersRow, "Mostrar", unifiedVisibleChannels, () => {
-      renderUnifiedChatFeed();
-    });
-    buildDropdown(targetsRow, "Enviar a", unifiedSendTargets, () => {
-      updateAllChatInputsState();
-    });
-
-    renderUnifiedChatFeed();
-
-    return tile;
-  }
-
-  function applySharedChatMode(){
-    sharedChatToggleBtn.classList.toggle("active", sharedChatMode);
-    sharedChatEl.hidden = !sharedChatMode;
-    sharedChatResizerEl.hidden = !sharedChatMode;
-    applySharedChatWidth();
-    updateTileChatVisibility();
-    if(sharedChatMode) renderSharedChatPanel();
-  }
-
-  sharedChatToggleBtn.addEventListener("click", () => {
-    sharedChatMode = !sharedChatMode;
-    saveSharedChatMode();
-    applySharedChatMode();
-  });
-
-  unifiedChatToggleBtn.addEventListener("click", () => {
-    unifiedChatMode = !unifiedChatMode;
-    saveUnifiedChatMode();
-    unifiedChatToggleBtn.classList.toggle("active", unifiedChatMode);
-
-    if(unifiedChatMode){
-      channels.forEach(c => { unifiedVisibleChannels.add(c.name); unifiedSendTargets.add(c.name); });
-      connectIrc();
-      if(channels.length > 0 && !grid.querySelector(".unified-chat-tile")){
-        grid.appendChild(buildUnifiedChatTile());
-        updateGridLayout();
-        updateAllChatInputsState();
-      }
-    }else{
-      if(!authToken) closeIrc();
-      const existing = grid.querySelector(".unified-chat-tile");
-      if(existing) existing.remove();
-      unifiedChatMessagesEl = null;
-      unifiedChatSendInputEl = null;
-      unifiedChatSendBtnEl = null;
-      updateGridLayout();
-    }
-  });
-
-  sharedChatResizerEl.addEventListener("mousedown", (e) => {
+  chatResizerEl.addEventListener("pointerdown", (e) => {
     e.preventDefault();
     const narrow = isNarrow();
     const startX = e.clientX;
     const startY = e.clientY;
-    const rect = sharedChatEl.getBoundingClientRect();
+    const rect = chatPanelEl.getBoundingClientRect();
     const startWidth = rect.width;
     const startHeight = rect.height;
 
-    sharedChatResizerEl.classList.add("dragging");
+    chatResizerEl.classList.add("dragging");
     beginDrag(narrow ? "row-resize" : "col-resize");
 
     function onMove(ev){
       if(narrow){
-        const dy = startY - ev.clientY;
+        const dy = startY - ev.clientY; // arrastrar hacia arriba agranda el chat
         let h = startHeight + dy;
         h = Math.max(140, Math.min(h, Math.round(window.innerHeight * 0.75)));
-        sharedChatEl.style.height = h + "px";
-        layoutPrefs.sharedChatHeightMobile = h;
+        chatPanelEl.style.height = h + "px";
+        layoutPrefs.chatPanelHeightMobile = Math.round(h);
       }else{
-        const dx = startX - ev.clientX;
+        const dx = startX - ev.clientX; // arrastrar hacia la izquierda agranda el chat
         let w = startWidth + dx;
         w = Math.max(220, Math.min(w, 700));
-        sharedChatEl.style.width = w + "px";
-        layoutPrefs.sharedChatWidth = w;
+        chatPanelEl.style.width = w + "px";
+        layoutPrefs.chatPanelWidth = Math.round(w);
       }
     }
     function onUp(){
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-      sharedChatResizerEl.classList.remove("dragging");
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      chatResizerEl.classList.remove("dragging");
       endDrag();
       saveLayoutPrefs();
+      updateGridLayout();
     }
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
   });
+
+  /* ---- feed "Todos" ---- */
+  function isFeedAtBottom(){
+    const el = chatFeedEl;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  }
+  function scrollFeedToBottom(){
+    chatFeedEl.scrollTop = chatFeedEl.scrollHeight;
+    feedFollow = true;
+    chatNewPillEl.hidden = true;
+  }
+
+  chatFeedEl.addEventListener("scroll", () => {
+    if(chatFeedEl.clientHeight === 0) return; // pestaña oculta
+    feedFollow = isFeedAtBottom();
+    if(feedFollow) chatNewPillEl.hidden = true;
+  });
+  chatNewPillEl.addEventListener("click", scrollFeedToBottom);
+
+  function updateFeedEmpty(){
+    const hasMsgs = chatFeedEl.childElementCount > 0;
+    chatFeedEmptyEl.hidden = hasMsgs;
+    if(!hasMsgs){
+      chatFeedEmptyEl.textContent = channels.length === 0
+        ? "Agrega un canal para ver sus mensajes aquí."
+        : "Esperando mensajes…";
+    }
+  }
+
+  function removeFeedMessages(predicate){
+    Array.from(chatFeedEl.children).forEach(el => { if(predicate(el)) el.remove(); });
+    updateFeedEmpty();
+  }
+
+  /* =====================================================================
+     EMOTES Y BADGES
+     Todo valor externo (texto de chat, nombres, respuestas de API) se
+     mete al DOM con textContent / setAttribute; nunca innerHTML. Las URLs
+     de imágenes se ARMAN aquí a partir de un id validado, así que solo
+     pueden apuntar a los hosts conocidos.
+     ===================================================================== */
+  const TWITCH_EMOTE_ID_RE = /^[A-Za-z0-9_]{1,80}$/;
+  const ALNUM_ID_RE = /^[A-Za-z0-9]{1,64}$/;
+  const NUM_ID_RE = /^[0-9]{1,12}$/;
+  const BADGE_HOST = "https://static-cdn.jtvnw.net/";
+
+  function twitchEmoteUrl(id){ return `https://static-cdn.jtvnw.net/emoticons/v2/${id}/default/dark/1.0`; }
+  function stvEmoteUrl(id){ return `https://cdn.7tv.app/emote/${id}/1x.webp`; }
+  function bttvEmoteUrl(id){ return `https://cdn.betterttv.net/emote/${id}/1x`; }
+  function ffzEmoteUrl(id){ return `https://cdn.frankerfacez.com/emote/${id}/1`; }
+
+  function fetchJson(url, options){
+    return fetch(url, options)
+      .then(res => res.ok ? res.json() : null)
+      .catch(() => null);
+  }
+
+  function addEmote(map, name, id, idRe, urlFn){
+    if(typeof name !== "string" || !name || name.length > 100 || /\s/.test(name)) return;
+    id = String(id);
+    if(!idRe.test(id)) return;
+    map.set(name, urlFn(id));
+  }
+
+  function parse7tvSet(set, map){
+    if(!set || !Array.isArray(set.emotes)) return;
+    set.emotes.forEach(e => { if(e) addEmote(map, e.name, e.id, ALNUM_ID_RE, stvEmoteUrl); });
+  }
+  function parseBttvList(list, map){
+    if(!Array.isArray(list)) return;
+    list.forEach(e => { if(e) addEmote(map, e.code, e.id, ALNUM_ID_RE, bttvEmoteUrl); });
+  }
+  function parseFfzSets(sets, map){
+    if(!sets || typeof sets !== "object") return;
+    Object.keys(sets).forEach(k => {
+      const s = sets[k];
+      if(!s || !Array.isArray(s.emoticons)) return;
+      s.emoticons.forEach(e => { if(e) addEmote(map, e.name, e.id, NUM_ID_RE, ffzEmoteUrl); });
+    });
+  }
+
+  function loadGlobalEmotes(){
+    if(globalEmotesRequested) return;
+    globalEmotesRequested = true;
+    fetchJson("https://7tv.io/v3/emote-sets/global").then(d => parse7tvSet(d, globalEmotes.stv));
+    fetchJson("https://api.betterttv.net/3/cached/emotes/global").then(d => parseBttvList(d, globalEmotes.bttv));
+    fetchJson("https://api.frankerfacez.com/v1/set/global").then(d => {
+      if(!d || !d.sets) return;
+      const defaults = Array.isArray(d.default_sets) ? d.default_sets.map(String) : Object.keys(d.sets);
+      const picked = {};
+      defaults.forEach(id => { if(d.sets[id]) picked[id] = d.sets[id]; });
+      parseFfzSets(picked, globalEmotes.ffz);
+    });
+  }
+
+  function loadChannelEmotes(channel, roomId){
+    if(channelEmotes.has(channel)) return;
+    const sets = { stv: new Map(), bttv: new Map(), ffz: new Map() };
+    channelEmotes.set(channel, sets);
+    const id = encodeURIComponent(roomId);
+    fetchJson(`https://7tv.io/v3/users/twitch/${id}`).then(d => { if(d) parse7tvSet(d.emote_set, sets.stv); });
+    fetchJson(`https://api.betterttv.net/3/cached/users/twitch/${id}`).then(d => {
+      if(!d) return;
+      parseBttvList(d.channelEmotes, sets.bttv);
+      parseBttvList(d.sharedEmotes, sets.bttv);
+    });
+    fetchJson(`https://api.frankerfacez.com/v1/room/id/${id}`).then(d => { if(d) parseFfzSets(d.sets, sets.ffz); });
+  }
+
+  function lookupThirdPartyEmote(channel, word){
+    const ch = channelEmotes.get(channel);
+    if(ch){
+      const u = ch.stv.get(word) || ch.bttv.get(word) || ch.ffz.get(word);
+      if(u) return u;
+    }
+    return globalEmotes.stv.get(word) || globalEmotes.bttv.get(word) || globalEmotes.ffz.get(word) || null;
+  }
+
+  function setRoomId(channel, roomId){
+    if(!roomId || !NUM_ID_RE.test(roomId)) return;
+    if(!channels.some(c => c.name === channel)) return;
+    if(roomIds.get(channel) === roomId) return;
+    roomIds.set(channel, roomId);
+    loadChannelEmotes(channel, roomId);
+    if(authToken) loadChannelBadges(channel, roomId);
+  }
+
+  function parseBadgeResponse(d, map){
+    if(!d || !Array.isArray(d.data)) return;
+    d.data.forEach(set => {
+      if(!set || typeof set.set_id !== "string" || !Array.isArray(set.versions)) return;
+      set.versions.forEach(v => {
+        if(!v || typeof v.image_url_1x !== "string") return;
+        if(!v.image_url_1x.startsWith(BADGE_HOST)) return;
+        map.set(set.set_id + "/" + v.id, { url: v.image_url_1x, title: typeof v.title === "string" ? v.title : set.set_id });
+      });
+    });
+  }
+
+  function helixHeaders(){
+    return { "Authorization": "Bearer " + authToken, "Client-Id": CLIENT_ID };
+  }
+
+  function loadGlobalBadges(){
+    if(globalBadgesRequested || !authToken) return;
+    globalBadgesRequested = true;
+    fetchJson("https://api.twitch.tv/helix/chat/badges/global", { headers: helixHeaders() })
+      .then(d => parseBadgeResponse(d, globalBadges));
+  }
+
+  function loadChannelBadges(channel, roomId){
+    if(!authToken || channelBadges.has(channel)) return;
+    const map = new Map();
+    channelBadges.set(channel, map);
+    fetchJson(`https://api.twitch.tv/helix/chat/badges?broadcaster_id=${encodeURIComponent(roomId)}`, { headers: helixHeaders() })
+      .then(d => parseBadgeResponse(d, map));
+  }
+
+  function loadAllBadges(){
+    loadGlobalBadges();
+    roomIds.forEach((id, ch) => loadChannelBadges(ch, id));
+  }
+
+  function clearBadges(){
+    globalBadges.clear();
+    channelBadges.clear();
+    globalBadgesRequested = false;
+  }
+
+  function makeImg(cls, url, name){
+    const img = document.createElement("img");
+    img.className = cls;
+    img.src = url;
+    img.alt = name;
+    img.title = name;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.referrerPolicy = "no-referrer";
+    return img;
+  }
+
+  function parseTwitchEmotes(tag){
+    const out = [];
+    if(!tag) return out;
+    tag.split("/").forEach(part => {
+      const c = part.indexOf(":");
+      if(c < 1) return;
+      const id = part.slice(0, c);
+      if(!TWITCH_EMOTE_ID_RE.test(id)) return;
+      part.slice(c + 1).split(",").forEach(r => {
+        const m = r.match(/^(\d+)-(\d+)$/);
+        if(!m) return;
+        const start = parseInt(m[1], 10), end = parseInt(m[2], 10);
+        if(end >= start) out.push({ start, end, id });
+      });
+    });
+    out.sort((a, b) => a.start - b.start);
+    return out;
+  }
+
+  // Texto sin emotes de Twitch: se parte por espacios y cada palabra que
+  // coincide con un emote de 7TV/BTTV/FFZ se vuelve <img>.
+  function appendWords(container, str, channel){
+    if(!str) return;
+    let buf = "";
+    str.split(/(\s+)/).forEach(tok => {
+      const url = tok && !/^\s+$/.test(tok) ? lookupThirdPartyEmote(channel, tok) : null;
+      if(url){
+        if(buf){ container.appendChild(document.createTextNode(buf)); buf = ""; }
+        container.appendChild(makeImg("emote", url, tok));
+      }else{
+        buf += tok;
+      }
+    });
+    if(buf) container.appendChild(document.createTextNode(buf));
+  }
+
+  function renderMessageContent(container, text, emotesTag, channel){
+    // los índices de Twitch cuentan code points, no unidades UTF-16
+    const chars = Array.from(text);
+    let pos = 0;
+    parseTwitchEmotes(emotesTag).forEach(e => {
+      if(e.start < pos || e.end >= chars.length) return;
+      appendWords(container, chars.slice(pos, e.start).join(""), channel);
+      container.appendChild(makeImg("emote", twitchEmoteUrl(e.id), chars.slice(e.start, e.end + 1).join("")));
+      pos = e.end + 1;
+    });
+    appendWords(container, chars.slice(pos).join(""), channel);
+  }
+
+  function renderBadges(container, badgesTag, channel){
+    if(!authToken || !badgesTag) return;
+    const chMap = channelBadges.get(channel);
+    badgesTag.split(",").forEach(b => {
+      if(!b) return;
+      const info = (chMap && chMap.get(b)) || globalBadges.get(b);
+      if(info) container.appendChild(makeImg("badge", info.url, info.title));
+    });
+  }
+
+  /* ---- un mensaje del feed ---- */
+  function buildMessageEl(m){
+    const div = document.createElement("div");
+    div.className = "chat-msg" + (m.action ? " action" : "");
+    div.dataset.channel = m.channel;
+    if(m.msgId) div.dataset.msgId = m.msgId;
+    if(m.userId) div.dataset.userId = m.userId;
+    if(m.login) div.dataset.login = m.login;
+
+    const chanTag = document.createElement("button");
+    chanTag.type = "button";
+    chanTag.className = "msg-channel";
+    chanTag.textContent = m.channel;
+    chanTag.title = "Abrir el chat de " + m.channel;
+    chanTag.style.background = channelColor(m.channel);
+    chanTag.addEventListener("click", () => selectTab(m.channel));
+    div.appendChild(chanTag);
+
+    const badgesSpan = document.createElement("span");
+    badgesSpan.className = "msg-badges";
+    renderBadges(badgesSpan, m.badges, m.channel);
+    if(badgesSpan.childElementCount) div.appendChild(badgesSpan);
+
+    const userSpan = document.createElement("span");
+    userSpan.className = "msg-user";
+    userSpan.textContent = m.user;
+    if(m.color && /^#[0-9a-fA-F]{6}$/.test(m.color)) userSpan.style.color = m.color;
+    div.appendChild(userSpan);
+
+    const sep = document.createElement("span");
+    sep.className = "msg-sep";
+    sep.textContent = m.action ? " " : ": ";
+    div.appendChild(sep);
+
+    const textSpan = document.createElement("span");
+    textSpan.className = "msg-text";
+    if(m.action && m.color && /^#[0-9a-fA-F]{6}$/.test(m.color)) textSpan.style.color = m.color;
+    renderMessageContent(textSpan, m.text, m.emotes, m.channel);
+    div.appendChild(textSpan);
+    return div;
+  }
+
+  function addChatMessage(m){
+    if(!channels.some(c => c.name === m.channel)) return; // canal ya quitado
+    const visible = chatFeedEl.clientHeight > 0;
+    const follow = visible ? (feedFollow = isFeedAtBottom()) : feedFollow;
+    chatFeedEl.appendChild(buildMessageEl(m));
+    while(chatFeedEl.childElementCount > MAX_MESSAGES){
+      chatFeedEl.removeChild(chatFeedEl.firstElementChild);
+    }
+    chatFeedEmptyEl.hidden = true;
+    if(follow){
+      if(visible) scrollFeedToBottom();
+    }else{
+      chatNewPillEl.hidden = false;
+    }
+  }
 
   /* =====================================================================
      CONTROLES DE LAYOUT (columnas manuales + reset)
@@ -926,45 +868,24 @@
   });
 
   resetLayoutBtn.addEventListener("click", () => {
-    layoutPrefs = {
-      colsOverride: null,
-      colFr: null,
-      rowFr: null,
-      dimsKey: null,
-      chatWidth: DEFAULT_CHAT_WIDTH,
-      chatHeightMobile: DEFAULT_CHAT_HEIGHT,
-      sharedChatWidth: DEFAULT_SHARED_CHAT_WIDTH,
-      sharedChatHeightMobile: DEFAULT_SHARED_CHAT_HEIGHT_MOBILE
-    };
-    channels.forEach(c => { c.chatWidth = null; c.chatHeightMobile = null; });
+    layoutPrefs = defaultLayoutPrefs();
     syncColsSelect();
     saveLayoutPrefs();
-    saveChannels();
-    applySharedChatWidth();
-    renderChannels();
+    applyChatPanelSize();
+    updateGridLayout();
   });
 
   /* =====================================================================
-     RENDER: TILES
+     RENDER: TILES (solo video)
      ===================================================================== */
   function renderChannels(){
-    grid.innerHTML = "";
-    tileRegistry = [];
-    unifiedChatMessagesEl = null;
-    unifiedChatSendInputEl = null;
-    unifiedChatSendBtnEl = null;
-
+    grid.textContent = "";
     channels.forEach(ch => {
       grid.appendChild(buildTile(ch));
     });
-
-    if(unifiedChatMode && channels.length > 0){
-      grid.appendChild(buildUnifiedChatTile());
-    }
-
     updateGridLayout();
-    updateAllChatInputsState();
-    if(sharedChatMode) renderSharedChatPanel();
+    renderChatTabs();
+    updateFeedEmpty();
   }
 
   function buildTile(ch){
@@ -1006,18 +927,27 @@
     dragHandle.title = "Arrastrar para reordenar";
     dragHandle.textContent = "⠿";
 
+    const dot = document.createElement("span");
+    dot.className = "dd-dot";
+    dot.style.background = channelColor(ch.name);
+
     const nameEl = document.createElement("div");
     nameEl.className = "channel-name";
     nameEl.textContent = ch.name;
     nameEl.title = ch.name;
 
-    const chatToggle = document.createElement("button");
-    const chatToggleIsActive = sharedChatMode ? (sharedChatActive === ch.name) : ch.chatOpen;
-    chatToggle.className = "icon-btn" + (chatToggleIsActive ? " active" : "");
-    chatToggle.title = sharedChatMode ? "Ver el chat de este canal en el panel compartido" : "Mostrar / ocultar chat";
-    chatToggle.textContent = "💬";
-    chatToggle.dataset.role = "chat-toggle";
-    chatToggle.dataset.channel = ch.name;
+    const chatBtn = document.createElement("button");
+    chatBtn.className = "icon-btn";
+    chatBtn.title = "Abrir el chat de este canal en el panel";
+    chatBtn.textContent = "💬";
+    chatBtn.addEventListener("click", () => {
+      if(!chatPanelOpen){
+        chatPanelOpen = true;
+        saveChatPanelOpen();
+        applyChatPanelOpen();
+      }
+      selectTab(ch.name);
+    });
 
     const removeBtn = document.createElement("button");
     removeBtn.className = "icon-btn remove";
@@ -1026,8 +956,9 @@
     removeBtn.addEventListener("click", () => removeChannel(ch.name));
 
     header.appendChild(dragHandle);
+    header.appendChild(dot);
     header.appendChild(nameEl);
-    header.appendChild(chatToggle);
+    header.appendChild(chatBtn);
     header.appendChild(removeBtn);
 
     // body
@@ -1042,153 +973,10 @@
     videoFrame.setAttribute("allow", "autoplay; fullscreen");
     videoWrap.appendChild(videoFrame);
 
-    // divisor arrastrable entre video y chat
-    const showOwnChat = !sharedChatMode && ch.chatOpen;
-
-    const resizer = document.createElement("div");
-    resizer.className = "tile-resizer";
-    resizer.hidden = !showOwnChat;
-
-    const chatPanel = document.createElement("div");
-    chatPanel.className = "chat-panel" + (showOwnChat ? "" : " hidden");
-    applyChatSize(ch, chatPanel);
-
-    const chatFrame = document.createElement("iframe");
-    chatFrame.src = `https://www.twitch.tv/embed/${encodeURIComponent(ch.name)}/chat?parent=${encodeURIComponent(PARENT)}&darkpopout`;
-    chatPanel.appendChild(chatFrame);
-
-    const sendForm = document.createElement("form");
-    sendForm.className = "chat-send-form";
-    const sendInput = document.createElement("input");
-    sendInput.type = "text";
-    sendInput.maxLength = 500;
-    sendInput.dataset.role = "chat-input";
-    const sendBtn = document.createElement("button");
-    sendBtn.type = "submit";
-    sendBtn.textContent = "➤";
-    sendBtn.dataset.role = "chat-send-btn";
-
-    sendForm.appendChild(sendInput);
-    sendForm.appendChild(sendBtn);
-    sendForm.addEventListener("submit", (e) => {
-      e.preventDefault();
-      const text = sendInput.value.trim();
-      if(!text) return;
-      const ok = sendChatMessage(ch.name, text);
-      if(ok) sendInput.value = "";
-    });
-
-    chatPanel.appendChild(sendForm);
-
-    chatToggle.addEventListener("click", () => {
-      if(sharedChatMode){
-        sharedChatActive = ch.name;
-        saveSharedChatActive();
-        renderChannelSelect();
-        renderSharedChatFrame();
-        grid.querySelectorAll('[data-role="chat-toggle"]').forEach(b => {
-          b.classList.toggle("active", b.dataset.channel === sharedChatActive);
-        });
-        return;
-      }
-      ch.chatOpen = !ch.chatOpen;
-      saveChannels();
-      chatToggle.classList.toggle("active", ch.chatOpen);
-      chatPanel.classList.toggle("hidden", !ch.chatOpen);
-      resizer.hidden = !ch.chatOpen;
-    });
-
-    attachChatResizer(resizer, ch, chatPanel);
-
     body.appendChild(videoWrap);
-    body.appendChild(resizer);
-    body.appendChild(chatPanel);
-
     tile.appendChild(header);
     tile.appendChild(body);
-
-    tileRegistry.push({ name: ch.name, chatToggle, chatPanel, resizer });
-
     return tile;
-  }
-
-  function applyChatSize(ch, chatPanel){
-    if(isNarrow()){
-      const h = ch.chatHeightMobile || layoutPrefs.chatHeightMobile || DEFAULT_CHAT_HEIGHT;
-      chatPanel.style.height = h + "px";
-      chatPanel.style.width = "";
-    }else{
-      const w = ch.chatWidth || layoutPrefs.chatWidth || DEFAULT_CHAT_WIDTH;
-      chatPanel.style.width = w + "px";
-      chatPanel.style.height = "";
-    }
-  }
-
-  /* ---- arrastrar para cambiar el tamaño del chat vs. el video ---- */
-  function attachChatResizer(resizerEl, ch, chatPanel){
-    resizerEl.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      const narrow = isNarrow();
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const startRect = chatPanel.getBoundingClientRect();
-      const startWidth = startRect.width;
-      const startHeight = startRect.height;
-
-      resizerEl.classList.add("dragging");
-      beginDrag(narrow ? "row-resize" : "col-resize");
-
-      function onMove(ev){
-        if(narrow){
-          const dy = startY - ev.clientY; // arrastrar hacia arriba agranda el chat
-          let h = startHeight + dy;
-          h = Math.max(120, Math.min(h, Math.round(window.innerHeight * 0.7)));
-          chatPanel.style.height = h + "px";
-          ch.chatHeightMobile = h;
-        }else{
-          const dx = startX - ev.clientX; // arrastrar hacia la izquierda agranda el chat
-          let w = startWidth + dx;
-          w = Math.max(180, Math.min(w, 700));
-          chatPanel.style.width = w + "px";
-          ch.chatWidth = w;
-        }
-      }
-      function onUp(){
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-        resizerEl.classList.remove("dragging");
-        endDrag();
-        // recordar el último tamaño usado como default para canales nuevos
-        if(narrow){
-          layoutPrefs.chatHeightMobile = ch.chatHeightMobile;
-        }else{
-          layoutPrefs.chatWidth = ch.chatWidth;
-        }
-        saveLayoutPrefs();
-        saveChannels();
-      }
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
-    });
-  }
-
-  function updateAllChatInputsState(){
-    const inputs = grid.querySelectorAll('[data-role="chat-input"]');
-    const btns = grid.querySelectorAll('[data-role="chat-send-btn"]');
-    inputs.forEach(inp => {
-      inp.disabled = !authToken;
-      inp.placeholder = authToken ? "Enviar mensaje…" : "Inicia sesión para chatear";
-    });
-    btns.forEach(b => { b.disabled = !authToken; });
-
-    if(unifiedChatSendInputEl){
-      const noUnifiedTargets = unifiedSendTargets.size === 0;
-      unifiedChatSendInputEl.disabled = !authToken || noUnifiedTargets;
-      unifiedChatSendInputEl.placeholder = !authToken
-        ? "Inicia sesión para chatear"
-        : (noUnifiedTargets ? "Elegí a quién enviar arriba…" : "Enviar mensaje…");
-      if(unifiedChatSendBtnEl) unifiedChatSendBtnEl.disabled = !authToken || noUnifiedTargets;
-    }
   }
 
   /* =====================================================================
@@ -1200,7 +988,7 @@
 
     const name = normalizeChannelName(channelInput.value);
     if(!name){
-      addError.textContent = "Escribí un nombre de canal.";
+      addError.textContent = "Escribe un nombre de canal.";
       return;
     }
     if(!CHANNEL_RE.test(name)){
@@ -1212,34 +1000,29 @@
       return;
     }
 
-    channels.push({ name, chatOpen: false, chatWidth: null, chatHeightMobile: null });
-    unifiedVisibleChannels.add(name);
-    unifiedSendTargets.add(name);
+    channels.push({ name });
     saveChannels();
     renderChannels();
     channelInput.value = "";
 
-    if(ircSocket && (ircConnected || ircSocket.readyState === WebSocket.CONNECTING)){
-      if(ircConnected) ircJoin(name);
-      // si todavía se está conectando, el handler "open" une a todos los
-      // canales presentes en ese momento, así que no hace falta nada más.
-    }else if(authToken || unifiedChatMode){
+    if(ircSocket && ircSocket.readyState === WebSocket.OPEN){
+      ircJoin(name);
+    }else if(!ircSocket || ircSocket.readyState !== WebSocket.CONNECTING){
+      // si se está conectando, el handler "open" une a todos los canales
+      // presentes en ese momento, así que no hace falta nada más.
       connectIrc();
     }
   });
 
   function removeChannel(name){
     channels = channels.filter(c => c.name !== name);
-    unifiedVisibleChannels.delete(name);
-    unifiedSendTargets.delete(name);
-    chatMessages = chatMessages.filter(m => m.channel !== name);
-    if(sharedChatActive === name){
-      sharedChatActive = channels.length ? channels[0].name : null;
-      saveSharedChatActive();
-    }
+    roomIds.delete(name);
+    channelEmotes.delete(name);
+    channelBadges.delete(name);
     saveChannels();
-    renderChannels();
     if(ircConnected) ircPart(name);
+    removeFeedMessages(el => el.dataset.channel === name);
+    renderChannels();
     if(channels.length === 0) closeIrc();
   }
 
@@ -1255,38 +1038,71 @@
 
   /* =====================================================================
      AUTENTICACIÓN — OAuth Implicit Grant de Twitch
+     El token se guarda en localStorage (twitch-multiview.auth) junto con
+     su vencimiento; se valida al cargar y cada hora mientras está activo.
      ===================================================================== */
-  function buildAuthorizeUrl(){
+  function readStoredAuth(){
+    try{
+      const raw = localStorage.getItem(AUTH_KEY);
+      if(!raw) return null;
+      const a = JSON.parse(raw);
+      if(!a || typeof a.token !== "string" || !a.token) return null;
+      return a;
+    }catch(e){ return null; }
+  }
+  function writeStoredAuth(a){
+    try{ localStorage.setItem(AUTH_KEY, JSON.stringify(a)); }catch(e){ /* noop */ }
+  }
+  function clearStoredAuth(){
+    try{ localStorage.removeItem(AUTH_KEY); }catch(e){ /* noop */ }
+  }
+
+  function randomState(){
+    const a = new Uint8Array(16);
+    crypto.getRandomValues(a);
+    return Array.from(a, b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function buildAuthorizeUrl(state){
     const params = new URLSearchParams({
       client_id: CLIENT_ID,
       redirect_uri: REDIRECT_URI,
       response_type: "token",
-      scope: OAUTH_SCOPES
+      scope: OAUTH_SCOPES,
+      state
     });
     return `https://id.twitch.tv/oauth2/authorize?${params.toString()}`;
   }
 
   loginBtn.addEventListener("click", () => {
     if(!CLIENT_ID || CLIENT_ID === "TU_CLIENT_ID_AQUI"){
-      alert("Todavía no configuraste tu CLIENT_ID. Editá la constante CLIENT_ID al principio de script.js con el Client ID de tu app registrada en dev.twitch.tv/console.");
+      alert("Todavía no configuraste tu CLIENT_ID. Edita la constante CLIENT_ID al principio de script.js con el Client ID de tu app registrada en dev.twitch.tv/console.");
       return;
     }
-    window.location.href = buildAuthorizeUrl();
+    const state = randomState();
+    try{ sessionStorage.setItem(OAUTH_STATE_KEY, state); }catch(e){ /* noop */ }
+    window.location.href = buildAuthorizeUrl(state);
   });
 
   logoutBtn.addEventListener("click", () => {
-    logout();
+    logout(true);
   });
 
-  function logout(){
+  function logout(revoke){
+    const token = authToken || (readStoredAuth() || {}).token;
     authToken = null;
     authUsername = null;
-    closeIrc();
-    // reconectar en modo anónimo: se pierde la capacidad de enviar, pero
-    // el chat unificado sigue mostrando los mensajes de los canales.
-    if(unifiedChatMode && channels.length > 0) connectIrc();
+    clearStoredAuth();
+    clearBadges();
+    if(authValidateTimer){ clearInterval(authValidateTimer); authValidateTimer = null; }
+    if(revoke && token){
+      fetch("https://id.twitch.tv/oauth2/revoke", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ client_id: CLIENT_ID, token }).toString()
+      }).catch(() => { /* el token se borra igual */ });
+    }
     refreshAuthUI();
-    updateAllChatInputsState();
   }
 
   function refreshAuthUI(){
@@ -1297,95 +1113,147 @@
     }else{
       loginBtn.hidden = false;
       userChip.hidden = true;
+      userNameEl.textContent = "";
     }
   }
 
-  // al cargar: si venimos de la redirección de Twitch, el token llega
-  // en el fragmento de la URL (#access_token=...&...)
-  function handleOAuthRedirect(){
-    if(!window.location.hash) return;
-    const hash = window.location.hash.startsWith("#")
-      ? window.location.hash.substring(1)
-      : window.location.hash;
-    const params = new URLSearchParams(hash);
-    const token = params.get("access_token");
-    if(!token) return;
-
-    authToken = token;
-
-    // limpiar la URL para no dejar el token visible ni persistido
-    const cleanUrl = window.location.pathname + window.location.search;
-    window.history.replaceState(null, "", cleanUrl);
-
-    fetchAuthenticatedUser();
-  }
-
-  function fetchAuthenticatedUser(){
-    fetch("https://api.twitch.tv/helix/users", {
-      headers: {
-        "Authorization": "Bearer " + authToken,
-        "Client-Id": CLIENT_ID
-      }
+  // Pregunta a Twitch si el token sigue sirviendo.
+  //   "ok"      -> { login, user_id, expires_in }
+  //   "invalid" -> el token ya no sirve (se borra)
+  //   "error"   -> no se pudo preguntar (red caída): no se borra nada
+  function validateToken(token){
+    return fetch("https://id.twitch.tv/oauth2/validate", {
+      headers: { "Authorization": "OAuth " + token }
     })
     .then(res => {
-      if(!res.ok) throw new Error("No se pudo validar el token (" + res.status + ")");
-      return res.json();
+      if(res.status === 401) return { status: "invalid" };
+      if(!res.ok) return { status: "error" };
+      return res.json().then(d => (d && typeof d.login === "string")
+        ? { status: "ok", data: d }
+        : { status: "invalid" });
     })
-    .then(data => {
-      const user = data && data.data && data.data[0];
-      if(!user) throw new Error("Respuesta de usuario vacía");
-      authUsername = user.login;
-      refreshAuthUI();
-      updateAllChatInputsState();
-      connectIrc();
-    })
-    .catch(err => {
-      console.error("Error obteniendo el usuario autenticado:", err);
-      logout();
+    .catch(() => ({ status: "error" }));
+  }
+
+  function applyValidatedAuth(token, data){
+    authToken = token;
+    authUsername = data.login;
+    const expiresIn = typeof data.expires_in === "number" ? data.expires_in : 0;
+    writeStoredAuth({
+      token,
+      login: data.login,
+      userId: typeof data.user_id === "string" ? data.user_id : null,
+      expiresAt: expiresIn > 0 ? Date.now() + expiresIn * 1000 : null
     });
+    refreshAuthUI();
+    loadAllBadges();
+    if(!authValidateTimer){
+      // Twitch pide validar cada hora mientras la sesión está abierta
+      authValidateTimer = setInterval(() => {
+        if(!authToken) return;
+        const t = authToken;
+        validateToken(t).then(r => {
+          if(r.status === "invalid" && authToken === t) logout(false);
+        });
+      }, 60 * 60 * 1000);
+    }
+  }
+
+  function startSessionWithToken(token){
+    return validateToken(token).then(r => {
+      if(r.status === "ok") applyValidatedAuth(token, r.data);
+      else if(r.status === "invalid"){ clearStoredAuth(); refreshAuthUI(); }
+      else refreshAuthUI(); // sin red: se queda guardado para el próximo intento
+      return r.status;
+    });
+  }
+
+  // Al cargar: si venimos de la redirección de Twitch, el token llega en
+  // el fragmento de la URL (#access_token=...&state=...). Si no, se
+  // intenta con el token guardado.
+  function restoreAuth(){
+    const hash = window.location.hash ? window.location.hash.replace(/^#/, "") : "";
+    if(hash){
+      const params = new URLSearchParams(hash);
+      const token = params.get("access_token");
+      if(token || params.get("error")){
+        // limpiar la URL para no dejar el token visible
+        window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
+      if(token){
+        let expected = null;
+        try{
+          expected = sessionStorage.getItem(OAUTH_STATE_KEY);
+          sessionStorage.removeItem(OAUTH_STATE_KEY);
+        }catch(e){ expected = null; }
+        if(expected && params.get("state") === expected){
+          return startSessionWithToken(token);
+        }
+        console.warn("Inicio de sesión descartado: el parámetro state no coincide.");
+      }
+    }
+
+    const stored = readStoredAuth();
+    if(!stored) return Promise.resolve("none");
+    if(typeof stored.expiresAt === "number" && stored.expiresAt <= Date.now()){
+      clearStoredAuth();
+      return Promise.resolve("expired");
+    }
+    return startSessionWithToken(stored.token);
   }
 
   /* =====================================================================
-     IRC sobre WebSocket
+     IRC sobre WebSocket (anónimo, solo lectura)
      ===================================================================== */
-  // Con sesión iniciada nos conectamos con el nick real + token, lo que
-  // permite enviar mensajes. Si no hay sesión pero el chat unificado está
-  // activo, igual nos conectamos con un nick anónimo de solo lectura
-  // ("justinfanXXXXX") para poder leer y mezclar los mensajes en el feed
-  // — no permite enviar, pero sí ver el chat de todos los canales.
+  // Nos conectamos con un nick anónimo ("justinfanXXXXX") para leer y
+  // mezclar los mensajes de todos los canales en la pestaña "Todos".
+  // Para escribir se usa el chat nativo de cada pestaña de canal.
   function connectIrc(){
-    const authed = !!(authToken && authUsername);
-    if(!authed && !(unifiedChatMode && channels.length > 0)) return;
+    if(channels.length === 0) return;
     closeIrc();
+    ircWantOpen = true;
+    loadGlobalEmotes();
 
-    ircSocket = new WebSocket("wss://irc-ws.chat.twitch.tv:443");
-    const anon = !authed;
-    const nick = anon ? ("justinfan" + Math.floor(10000 + Math.random() * 89999)) : authUsername;
+    const sock = new WebSocket("wss://irc-ws.chat.twitch.tv:443");
+    ircSocket = sock;
+    const nick = "justinfan" + Math.floor(10000 + Math.random() * 89999);
 
-    ircSocket.addEventListener("open", () => {
-      if(!anon) ircSocket.send("PASS oauth:" + authToken);
-      ircSocket.send("NICK " + nick);
-      ircSocket.send("CAP REQ :twitch.tv/commands twitch.tv/tags");
-      channels.forEach(c => ircJoin(c.name));
+    sock.addEventListener("open", () => {
+      sock.send("CAP REQ :twitch.tv/commands twitch.tv/tags");
+      sock.send("NICK " + nick);
+      if(channels.length) sock.send("JOIN " + channels.map(c => "#" + c.name).join(","));
     });
 
-    ircSocket.addEventListener("message", (event) => {
-      const lines = event.data.split("\r\n").filter(Boolean);
-      lines.forEach(handleIrcLine);
+    sock.addEventListener("message", (event) => {
+      if(sock !== ircSocket) return;
+      String(event.data).split("\r\n").filter(Boolean).forEach(handleIrcLine);
     });
 
-    ircSocket.addEventListener("close", () => {
+    sock.addEventListener("close", () => {
+      if(sock !== ircSocket) return;
       ircConnected = false;
+      ircSocket = null;
+      scheduleIrcReconnect();
     });
 
-    ircSocket.addEventListener("error", (err) => {
-      console.error("Error de WebSocket IRC:", err);
+    sock.addEventListener("error", () => {
+      if(sock !== ircSocket) return;
+      console.warn("Error de WebSocket IRC; se reintenta en unos segundos.");
       ircConnected = false;
     });
   }
 
+  function scheduleIrcReconnect(){
+    if(!ircWantOpen || channels.length === 0 || ircReconnectTimer) return;
+    ircReconnectTimer = setTimeout(() => {
+      ircReconnectTimer = null;
+      if(ircWantOpen && channels.length > 0) connectIrc();
+    }, ircReconnectDelay);
+    ircReconnectDelay = Math.min(ircReconnectDelay * 2, 30000);
+  }
+
   function parseIrcTags(tagStr){
-    const tags = {};
+    const tags = Object.create(null);
     tagStr.split(";").forEach(pair => {
       const idx = pair.indexOf("=");
       if(idx === -1) return;
@@ -1400,8 +1268,8 @@
   }
 
   function handleIrcLine(line){
-    let rest = line;
-    let tags = {};
+    let rest = String(line);
+    let tags = Object.create(null);
 
     if(rest.startsWith("@")){
       const sp = rest.indexOf(" ");
@@ -1411,15 +1279,12 @@
     }
 
     if(rest.startsWith("PING")){
-      ircSocket.send("PONG :tmi.twitch.tv");
+      if(ircSocket && ircSocket.readyState === WebSocket.OPEN) ircSocket.send("PONG :tmi.twitch.tv");
       return;
     }
 
-    const match = rest.match(/^:(\S+)\s+(\S+)\s+(.*)$/);
-    if(!match){
-      if(/^:tmi\.twitch\.tv 001\b/.test(rest) || /\s001\s/.test(rest)) ircConnected = true;
-      return;
-    }
+    const match = rest.match(/^:(\S+)\s+(\S+)\s*(.*)$/);
+    if(!match) return;
 
     const prefix = match[1];
     const command = match[2];
@@ -1427,40 +1292,73 @@
 
     if(command === "001"){
       ircConnected = true;
+      ircReconnectDelay = 2000;
       return;
     }
 
-    if(command === "NOTICE"){
-      if(params.includes("Login authentication failed") || params.includes("Improperly formatted")){
-        console.error("Falló la autenticación IRC:", params);
-      }
+    if(command === "RECONNECT"){
+      if(ircSocket) try{ ircSocket.close(); }catch(e){ /* noop */ }
+      return;
+    }
+
+    if(command === "ROOMSTATE"){
+      const m = params.match(/^#(\S+)/);
+      if(m) setRoomId(m[1].toLowerCase(), tags["room-id"]);
+      return;
+    }
+
+    if(command === "CLEARMSG"){
+      const target = tags["target-msg-id"];
+      if(target) removeFeedMessages(el => el.dataset.msgId === target);
+      return;
+    }
+
+    if(command === "CLEARCHAT"){
+      const m = params.match(/^#(\S+)(?:\s+:(\S+))?/);
+      if(!m) return;
+      const ch = m[1].toLowerCase();
+      const uid = tags["target-user-id"];
+      const login = m[2] ? m[2].toLowerCase() : null;
+      // sin usuario = /clear de todo el chat de ese canal
+      removeFeedMessages(el => el.dataset.channel === ch && ((!uid && !login) ||
+        (uid && el.dataset.userId === uid) || (login && el.dataset.login === login)));
       return;
     }
 
     if(command === "PRIVMSG"){
-      const chanMatch = params.match(/^#(\S+)\s+:(.*)$/);
+      const chanMatch = params.match(/^#(\S+)\s+:([\s\S]*)$/);
       if(!chanMatch) return;
-      const channelName = chanMatch[1];
-      const text = chanMatch[2];
-      const user = tags["display-name"] || prefix.split("!")[0];
-      const color = tags["color"] || "";
-      addChatMessage(channelName, user, color, text);
+      const channelName = chanMatch[1].toLowerCase();
+      let text = chanMatch[2];
+      let action = false;
+      const am = text.match(/^\u0001ACTION ([\s\S]*)\u0001$/);
+      if(am){ text = am[1]; action = true; }
+      setRoomId(channelName, tags["room-id"]);
+      const login = prefix.split("!")[0].toLowerCase();
+      addChatMessage({
+        channel: channelName,
+        user: tags["display-name"] || login,
+        login,
+        userId: tags["user-id"] || "",
+        msgId: tags["id"] || "",
+        color: tags["color"] || "",
+        badges: tags["badges"] || "",
+        emotes: tags["emotes"] || "",
+        text,
+        action
+      });
     }
-  }
-
-  function addChatMessage(channelName, user, color, text){
-    const msg = { id: msgIdCounter++, channel: channelName, user, color, text, ts: Date.now() };
-    chatMessages.push(msg);
-    if(chatMessages.length > MAX_MESSAGES) chatMessages.shift();
-    if(unifiedChatMode) appendUnifiedMessageToFeed(msg);
   }
 
   function closeIrc(){
-    if(ircSocket){
-      try{ ircSocket.close(); }catch(e){ /* noop */ }
-    }
+    ircWantOpen = false;
+    if(ircReconnectTimer){ clearTimeout(ircReconnectTimer); ircReconnectTimer = null; }
+    const sock = ircSocket;
     ircSocket = null;
     ircConnected = false;
+    if(sock){
+      try{ sock.close(); }catch(e){ /* noop */ }
+    }
   }
 
   function ircJoin(name){
@@ -1475,26 +1373,18 @@
     }
   }
 
-  function sendChatMessage(channelName, text){
-    if(!authToken){
-      return false;
-    }
-    if(!ircSocket || ircSocket.readyState !== WebSocket.OPEN){
-      alert("La conexión de chat todavía no está lista. Probá de nuevo en un segundo.");
-      return false;
-    }
-    const safeText = text.replace(/[\r\n]/g, " ").slice(0, 500);
-    ircSocket.send(`PRIVMSG #${channelName} :${safeText}`);
-    return true;
-  }
-
   /* =====================================================================
      AVISO SI FALTA CONFIGURAR EL CLIENT ID
      ===================================================================== */
   function checkConfigWarning(){
     if(!CLIENT_ID || CLIENT_ID === "TU_CLIENT_ID_AQUI"){
       authWarning.hidden = false;
-      authWarning.innerHTML = `Configurá <code>CLIENT_ID</code> en script.js para poder iniciar sesión.`;
+      authWarning.textContent = "";
+      authWarning.appendChild(document.createTextNode("Configura "));
+      const code = document.createElement("code");
+      code.textContent = "CLIENT_ID";
+      authWarning.appendChild(code);
+      authWarning.appendChild(document.createTextNode(" en script.js para poder iniciar sesión."));
     }
   }
 
@@ -1502,18 +1392,35 @@
      INIT
      ===================================================================== */
   function init(){
+    cleanupOldStorage();
+    if(channels.length) saveChannels(); // reescribe sin campos viejos (chatOpen, etc.)
     checkConfigWarning();
-    handleOAuthRedirect();
     refreshAuthUI();
+    restoreAuth();
     syncColsSelect();
-    sharedChatToggleBtn.classList.toggle("active", sharedChatMode);
-    sharedChatEl.hidden = !sharedChatMode;
-    sharedChatResizerEl.hidden = !sharedChatMode;
-    applySharedChatWidth();
-    unifiedChatToggleBtn.classList.toggle("active", unifiedChatMode);
     renderChannels();
-    if(unifiedChatMode && channels.length > 0) connectIrc();
+    applyChatPanelOpen();
+    if(channels.length > 0) connectIrc();
   }
+
+  // Ganchos para pruebas desde la consola / navegador headless.
+  window.twitchMultiviewDebug = Object.freeze({
+    handleIrcLine: (line) => handleIrcLine(line),
+    restoreAuth: () => restoreAuth(),
+    state: () => ({
+      channels: channels.map(c => c.name),
+      activeTab,
+      chatPanelOpen,
+      ircConnected,
+      loggedIn: !!(authToken && authUsername),
+      roomIds: Object.fromEntries(roomIds),
+      emoteCounts: {
+        global: { stv: globalEmotes.stv.size, bttv: globalEmotes.bttv.size, ffz: globalEmotes.ffz.size },
+        channels: Object.fromEntries(Array.from(channelEmotes, ([k, v]) => [k, { stv: v.stv.size, bttv: v.bttv.size, ffz: v.ffz.size }]))
+      },
+      badgeCounts: { global: globalBadges.size, channels: Object.fromEntries(Array.from(channelBadges, ([k, v]) => [k, v.size])) }
+    })
+  });
 
   init();
 })();
